@@ -1,142 +1,562 @@
-# Ducati Monster Plus 937 (2021) — CAN Bus Reverse Engineering Findings
+# Ducati Monster 937 (2021) --- CAN Bus Reverse Engineering Findings
 
-Hardware: Seeed XIAO ESP32-S3 + Waveshare SN65HVD230 CAN transceiver, PlatformIO project in this repo (`env:seeed_xiao_esp32s3`, `handmade0octopus/ESP32-TWAI-CAN` library). All testing done in `TWAI_MODE_LISTEN_ONLY` — the ESP32 can never transmit or ACK on the bus, so this is safe to leave connected to the live vehicle bus at any time.
+Reverse engineering notes for the 2021 Ducati Monster 937 CAN bus.
 
-## Wiring
+Hardware used during testing: - Seeed XIAO ESP32-S3 - Waveshare
+SN65HVD230 CAN transceiver - SavvyCAN for capture and analysis - CAN bus
+speed: 500 kbps - 11-bit standard CAN IDs - 8-byte CAN frames
 
-| SN65HVD230 pin | XIAO ESP32-S3 pin |
-|---|---|
-| VCC | 3V3 (never the bike's 12V) |
-| GND | GND, tied to bike chassis/battery negative |
-| CTX | D0 (GPIO1) |
-| CRX | D1 (GPIO2) |
-| CANH/CANL | bike's CAN bus tap point — **no termination resistor added**, the bike's bus is already terminated at both ends |
+All captures were performed in CAN listen-only mode.
 
-## Bus parameters
+------------------------------------------------------------------------
 
-- **500 kbps**, 11-bit standard IDs, 8-byte data frames
-- Every frame observed carries a 2-byte trailer: second-to-last byte = rolling counter (0x00–0x0F, wraps), last byte = checksum/CRC. Older community docs for related Ducati platforms (Monster 696, Panigale/Multistrada1200/Diavel — same Mitsubishi-ECU architecture family) don't mention this trailer, meaning this generation added AUTOSAR-style message protection. **Byte offsets from those older docs do not transfer directly**, even when the same arbitration ID is reused.
+# Confirmed Signals
 
-## Confirmed signals
+  ------------------------------------------------------------------------------------------------
+  Signal         CAN ID         Bytes          Decoder                             Status
+  -------------- -------------- -------------- ----------------------------------- ---------------
+  Engine RPM     `0x024`        D3:D4          `((D3 << 8) \| D4) / 2`             **CONFIRMED**
 
-| Signal | ID | Formula | Evidence |
-|---|---|---|---|
-| **Engine temperature (°C)** | `0x180` | `byte[5] - 40` | Tracked live and correctly through an entire session: 41°C → 87°C → 93°C → 94°C (bike shut off for overheating) → cooled to 88°C → 82°C → rose again to 89°C → 77°C on restart. Monotonic, physically sensible, many independent confirmations across multiple sessions. **Solid.** |
-| **Ambient/air temperature (°C)** | `0x300` | `byte[0] - 40` | Matched 47°C exactly, then tracked a real 1°C drop to 46°C precisely on a second reading (`0x57`→`0x56`). Same `value+40` convention as engine temp. **Confirmed** — two independent, correctly-tracking data points. |
-| **Gear position (Neutral, 1st-5th confirmed; 6th predicted only)** | `0x024` | `byte[4] / 32` (Neutral = `0`) | Two guided tests were run, but both had a **systematic one-cue reaction lag**: the rider consistently finished each physical shift slightly after the spoken cue for the *next* gear (visible in the growing delay: 1.7s → 5.1s → 8.4s → 14.6s), so every observed transition was originally misattributed to one gear too high. Corrected live against the dash: `byte4=0` is genuinely Neutral only (not shared with 1st as first thought), and `byte4/32` gives the true gear number directly. Confirmed values: N=0, 1st=32, 2nd=64, 3rd=96, 4th=128, **5th=160 (confirmed live while riding, matched the dash exactly)**. 6th could not be tested — the gearbox wouldn't engage 6th while stationary (normal for a sequential dog-engagement gearbox; needs the wheel turning), so `192` (predicted extrapolation of the +32 pattern) remains unconfirmed until a real successful 6th-gear shift while riding. **Lesson: guided tests with spoken cues are vulnerable to reaction-lag misattribution; always cross-check the resulting numbering against the rider's own dash reading, not just internal consistency of the pattern.** |
-| **Wheel speed (km/h, 0-3 confirmed)** | `0x018` | byte[3]: count rising-edge crossings above threshold 20 in a 1s window → frequency (Hz) → `km/h = freq_Hz * 0.75` | First confirmed qualitatively (stationary→spin test: byte3 rock-solid `0x00` at rest, clear repeating sawtooth once spun). Then precisely calibrated with a guided 4-step test against the dash (0, 2, 3, 4 km/h held in sequence): measured frequencies were 0, 2.667, 4.0, 4.333 Hz. **The 0.75 scale factor fits the 0/2/3 km/h points essentially exactly** (0→0, 2.667×0.75=2.00, 4.0×0.75=3.00). The 4 km/h step came in low (4.333×0.75=3.25, not 4) — almost certainly because sustaining a meaningfully faster hand-spin than ~3-3.5 km/h-equivalent is physically hard to hold steady, not a formula error. **Confirmed accurate for 0-3 km/h; extrapolation above that is untested.** A real ride at known speed (GPS/speedo) would extend and firm up the calibrated range. |
-| **Engine RPM** | `0x024` | `RPM = ((byte[2] << 8) \| byte[3]) / 2` | See dedicated RPM section below for full history and evidence — confirmed across 4 independent live dash comparisons including a 28-second stable plateau. |
-| **Throttle position (%, 0-100)** | `0x080` | `byte[2]` is **not** an absolute value — it's an incremental encoder that wraps around the full 0-255 range multiple times across the physical throttle travel. Must unwrap/accumulate frame-to-frame: `accum += wrap_corrected_delta(raw, lastRaw)`, then `pct = clamp((accum - 188) / 610 * 100, 0, 100)`. | Two independent guided tests (closed→full-twist-to-hard-stop→closed), both via ESP32RET/GVRET capture. **Closed/rest raw value is exactly `188` (`0xBC`) in both tests, both at the start AND after releasing back — extremely repeatable reference point.** During a single quick twist to the stop, the raw byte wraps around 0↔255 two to three times in well under half a second (e.g. 200→212→227→243→**4**(wrap)→22→...→198→**11**(wrap)→...→245→**7**(wrap)→...→40) — far too fast to be a bounded 0-255 position; it's a rotation counter. Unwrapping (correcting each frame-to-frame delta by ±256 when it exceeds the half-range) gives a smooth monotonic accumulator. Total travel from closed to held-at-hard-stop measured **602 counts** (test 1) and **620 counts** (test 2) — close agreement, averaged to **610**. Implemented in `src/main.cpp` (`ID_THROTTLE`, `kThrottleClosedRaw=188`, `kThrottleFullScale=610`), builds clean. **Confirmed and calibrated.** Caveat: the running accumulator assumes the bike is stationary with throttle at rest when the board boots (used as the implicit zero); a very fast/violent twist that outruns the ~100Hz frame rate by more than half a wrap between samples could in theory desync it, though no such loss was observed in either test (per-frame deltas stayed well under the 128-count wrap-ambiguity threshold throughout). **Re-confirmed in a third live test**: raw was exactly `188` at rest again, and the accumulator hit the true ~610-620-count full-scale within ~0.4s of reaching the physical hard stop, matching prior calibration almost exactly. New observation from that test: while *held* at the stop for several seconds, the raw byte isn't perfectly static — small frame-to-frame sensor jitter continues, and since the unwrap logic treats every delta as real motion, it slowly drifted the internal accumulator well past the true full-scale count (creep, not a formula bug). Harmless in practice since `pct` is clamped to 0-100, but means the raw internal accumulator value alone (before clamping) isn't reliable as a "how long has it been held" indicator during a sustained hold. |
-| **Front brake lever (%, 0-100)** | `0x022` | `byte[5]`, linear: `pct = clamp((byte[5] - 3) / (251 - 3) * 100, 0, 100)`. **`0x03` = no brake at all, `0xFB`(251) = max squeeze.** | Discovered via a guided chat-narrated squeeze/release test (see below for a direction caveat), then calibrated with a direct live spot-check in SavvyCAN: rider held three distinct states and read the raw byte straight off the graph — `0x03` at rest (no brake), `0xFB` at max squeeze, `0x83`(131) at a rough half-squeeze. **The half-squeeze point lands almost exactly at the linear midpoint** ((3+251)/2=127 vs. observed 131) — strong evidence the relationship is genuinely linear across the range, not just two-point calibrated. **Confirmed and calibrated.** |
-| ~~Front brake lever (applied/released, proportional) — superseded~~ | `0x022` | *(superseded by the linear formula above — kept for the direction lesson)* | The original discovery test (chat-narrated squeeze/release cues, two events at t≈17.9s/21.9s) showed a clean, repeatable dynamic signature — rapid ramp to `0x03` on squeeze, ramp back up to ~180-210 on release — and was initially read as "low=squeezed, high=released". A later held-position calibration (four levels r0-r3, each confirmed deliberately: r0=hand fully off, r3=max squeeze against the bar) showed the **opposite** direction: raw increased monotonically from `03`(r0) through `17`,`47` to `B7`(r3). The SavvyCAN spot-check resolved it in favor of the second interpretation: **low=no brake, high=max brake**. Likely explanation: the original test's dynamic squeeze motion produced a fast transient dip toward `0x03` that doesn't reflect the true settled value at that position — similar in spirit to the throttle's held-position "creep" behavior, where the raw value during motion doesn't match the raw value once settled. **Lesson**: for an unfamiliar analog signal, a fast guided toggle test can correctly find *that* a signal responds to an action while still getting the *direction* backwards if the value behaves differently in motion vs. at rest — a deliberately-held, spot-checked calibration (or a tool like SavvyCAN's live graph) is worth doing before trusting the sign of a new analog formula, not just its existence. |
-| **Starter/kill switch position (3 states)** | `0x080` | `byte[5]`: `0x00` = kill switch off (killed), `0x20` = ready for start (run position, not cranking), `0x60` = engine actively starting (cranking). | Found by the rider via direct SavvyCAN inspection (same method that resolved the front brake direction), then cross-checked against a 90s logged capture with several real start/stop cycles. **`0x60` is rock-solid**: appeared for ~1 second bracketing every single restart event (RPM dip-then-catch), no exceptions across 5 separate cranks in one capture. The `0x00`/`0x20` split showed more complex timing in the logged capture than a simple static "killed vs ready" read (both values appeared in irregular multi-second stretches not perfectly aligned with obvious RPM-based state changes) — but the rider directly observed and confirmed the `00`/`20` mapping to the physical switch position in real time via SavvyCAN (the same gold-standard spot-check method already validated for the front brake direction), so it's recorded as confirmed here despite the logged capture alone not being fully conclusive on that part. **Useful side effect**: the `0x60` "starting" state gives a clean, distinct way to detect cranking, separate from RPM alone. |
-| **Side stand position** | `0x024` | `byte[5]`: `0x00` = stand down (deployed), `0x20` = stand up (retracted). | Found by the rider via direct SavvyCAN inspection, same method as above. Not yet independently re-verified by a guided/logged test in this doc, but a clean 2-state result reported directly off the live value, same as how the front brake's calibration points were obtained. |
+  Gear           `0x024`        D5             `D5 / 32`                           **CONFIRMED**
 
-## RPM — resolved conflict, bytes 2-3 formula reconfirmed with a refined scale
+  Wheel speed    `0x018`        D3:D4          `((D3 << 8) \| D4 - 0xA000) / 16`   **CONFIRMED**
 
-A different assistant session previously edited this file to claim `0x100` bytes 2-3 as RPM was **disproven**, based on one frame (`0x03B0`=944 combined) assumed to be from "idle-like conditions" giving an implausible ~3710 RPM, and proposed an alternative nibble-packed `byte[4]` hypothesis instead (never confirmed).
+  Engine         `0x180`        D5             `D5 - 40`                           **CONFIRMED**
+  temperature                                                                      
 
-That disproof did not hold up: in a later live-guided session, bytes 2-3 was tested against **four independent real dash comparisons**, including a clean 28-second stable held-RPM plateau (raw combined averaged 752.0 over 1550 samples, tightly clustered 720-816) matched against a dash reading of 3100-3400 RPM. All four points fit a consistent scale:
+  Ambient        `0x300`        D1             `D1 - 40`                           **CONFIRMED**
+  temperature                                                                      
 
-| Source | raw combined | real RPM | implied scale |
-|---|---|---|---|
-| initial single-point | 368 | 1400 | 3.804 |
-| range-low | 320 | 1260 | 3.938 |
-| range-high | 352 | 1420 | 4.034 |
-| long stable plateau (highest quality) | 752 | 3250 (mid of 3100-3400) | 4.322 |
+  Throttle       `0x080`        D3             Incremental encoder, see below      **CONFIRMED /
+  position                                                                         calibrated**
 
-**Averaged refined scale: `RPM = (byte[2]<<8 | byte[3]) * 4.02`.** The single frame that triggered the earlier "disproven" conclusion was very likely captured during or immediately after a throttle blip, not true idle as assumed — a combined value of 944 is entirely plausible mid-rev (944×4.02≈3795, consistent with a moderate rev, not "obviously too high" once the wrong assumption about engine state is removed). The nibble-packed `byte[4]` alternative was never confirmed against a real dash reading and should be considered abandoned.
+  Front brake    `0x022`        D6             `(D6 - 3) / 248 * 100`              **CONFIRMED /
+  lever                                                                            calibrated**
 
-**Lesson for future sessions**: don't disprove a working, multi-point-confirmed formula based on a single frame without first verifying what the engine was actually doing at that exact timestamp. A "value looks too high" reaction is not evidence unless the corresponding real-world state is confirmed.
+  Starter / kill `0x080`        D6             State values, see below             **CONFIRMED**
+  switch                                                                           
 
-### `0x100` byte4 mystery — largely resolved: it's a stale-data hold-over after shutdown, not a multiplexer
+  Side stand     `0x024`        D6             `0x00 = down`, `0x20 = up`          **CONFIRMED**
+  ------------------------------------------------------------------------------------------------
 
-A live snapshot check (engine confirmed running) read bytes2-3 as `22 E2` (8930 raw → 35,899 RPM, obviously impossible) while byte4 was `0x2E`. Moments later, with the engine confirmed fully stopped by the rider, bytes2-3 read cleanly as `00 00` → 0 RPM, and byte4 had dropped to `0x00` — matching the dash's real 0 RPM exactly. A third snapshot later (engine state not independently confirmed at that instant) showed yet another combination: byte4=`0xFC` with bytes2-3=`2F C2` (12226 raw → 49,149 RPM, again impossible).
+> Note: Byte numbering in this document is zero-based: D1 = byte\[0\],
+> D2 = byte\[1\], etc.
 
-Three distinct byte4 values seen so far (`0x2E`, `0x00`, `0xFC`), each paired with a very different bytes2-3 reading, and the only case independently verified against the dash (`0x00`/RPM=0) is also the only one that produced a sane result. This raises a real possibility that **byte4 acts as a mode or multiplex selector**, and bytes2-3 may only represent true RPM when byte4`=0x00` — otherwise encoding something else on the same ID entirely (common in AUTOSAR-style multiplexed signals, and this bus already has an AUTOSAR-style counter+CRC trailer). Not yet confirmed either way. **Recommended next test**: capture continuously through several full engine start→run→stop cycles, logging byte4 alongside bytes2-3 and the dash's actual RPM reading throughout, to see whether byte4's value set is small/enum-like and whether bytes2-3 only tracks real RPM when byte4 is a specific value.
+------------------------------------------------------------------------
 
-**Resolved with a clean logged test**, using the now-confirmed starter/kill switch signal (`0x080` byte5) as an independent, precisely-timed trigger. Captured continuously through a real engine shutdown and measured the gap between the kill switch reaching `0x00` (killed) and `0x100` bytes2-4 actually reaching all-zero:
+# Engine RPM --- `0x024`
 
-- Kill switch → `0x00` at **t=16.06s**
-- `0x100` bytes2-4 → all zero at **t=27.57s**
-- **Gap: 11.5 seconds**
+## Decoder
 
-This matches the rider's own observation exactly: after switching the engine off, the bike makes an audible "shhhh" sound (likely a pressure release or an ECU/relay shutdown sequence) some seconds later, and only then do the values actually reset — `0x100` **holds its last live values for over 11 seconds after the kill switch flips**, rather than updating immediately. This fully explains the two earlier "impossible RPM" snapshots (35,899 and 49,149 RPM) from earlier in this session: both were almost certainly captured during this exact hold-over window, reading stale-but-real data rather than garbage or a genuinely multiplexed field. The original "byte4 as multiplexer" hypothesis is no longer the leading explanation — a simple stale-data hold-over accounts for everything observed so far.
+``` text
+raw = (D3 << 8) | D4
+RPM = raw / 2
+```
 
-**Practical implication**: don't trust a single snapshot of `0x100` taken within ~12 seconds of a kill/shutdown event — wait for the hold-over to clear (or cross-check against the kill switch / `0x080` byte5) before treating the RPM reading as live.
+This signal was validated using multiple captures:
 
-**New lead from this same test**: right before shutdown, byte4 tracked RPM suspiciously cleanly — `RPM ≈ byte4 × 64.3` (e.g. byte4=`0x14`(20)→RPM≈1286, `0x16`(22)→RPM≈1415, `0x17`(23)→RPM≈1479, all consistent with that same ~64.3 ratio, which is close to `4.02 × 16`). This suggests byte4 might simply be a coarser, truncated/shifted version of the same RPM value bytes2-3 already encode, rather than an independent status flag — not yet confirmed across a wider RPM range, worth checking against a sustained high-RPM hold in a future session.
+-   cold-engine idle: approximately 1960--2100 RPM
+-   hot-engine idle: approximately 1280--1450 RPM
+-   engine startup
+-   engine speed above 4000 RPM
+-   engine shutdown
 
-**Follow-up observation**: byte2 (the *high* byte of the confirmed RPM formula) also reads `0x01` at idle and climbs higher as the throttle is opened — exactly the expected behavior for `RPM = (byte2<<8|byte3)*4.02` (e.g. ~1500 RPM idle → combined ≈373 → byte2=`0x01`), which is good live corroboration the RPM formula holds during normal riding, not just the guided tests. The rider also reports byte2 drops to `0` at the same fuel-pump-off moment as bytes 3-4. Since bytes 2-3 legitimately reach `00 00` whenever real RPM is truly 0 (already confirmed), **all three bytes zeroing together is more consistent with byte4 being an independent status flag (something like "engine actively running/fueled") that simply coincides with real RPM hitting zero, rather than byte4 acting as a multiplexer that changes what bytes 2-3 *mean***. This would mean the earlier impossible-RPM snapshots (byte4=`0x2E`/`0xFC` paired with nonsense bytes2-3 values) are a separate, still-unexplained glitch — possibly a transient/startup artifact — rather than byte4 gating the field's meaning. Still needs the continuous start→run→stop capture to sort out definitively.
+The Ducati dashboard can show values such as `1.960` or `2.100`. These
+represent approximately 1960 and 2100 RPM; the dot is a thousands
+separator/display formatting and is not part of the CAN encoding.
 
-## Ruled out (tested and disproven — don't retry without new evidence)
+------------------------------------------------------------------------
 
-- **`0x230` byte[2]/2 as battery voltage** — initially looked like a match (28 → 14.0V while running) and a second self-reported "12.5V" engine-off reading was assumed to confirm it, but that second point was never actually re-verified live. When checked properly, byte[2] turned out to be a **frozen constant** (`0x1C` always, never changes) — coincidence, not a real signal.
-- **`0x100` bytes 3-4 as RPM** — two conflicting documented mappings tested:
-  - 16-bit across bytes 3-4 → gave impossible 32,000+ RPM values once the engine was actually running.
-  - bytes 3-4 as engine temp/battery (Panigale doc) → also wrong, those signals are already accounted for by `0x180`/attempts at `0x230`.
-  - (NOT to be confused with bytes **2-3** of this ID, which IS the confirmed real RPM signal — see Confirmed signals / RPM section above. A different assistant session briefly mis-disproved the 2-3 pairing too based on a misread single frame; that's been corrected.)
-- **`0x100` byte[4] nibble-packed `(byte[2]<<4)|(byte[3]>>4)` as RPM** — a hypothesis from a different assistant session, never confirmed against a real dash reading, superseded by the properly multi-point-confirmed bytes 2-3 formula. Abandoned.
-- **`0x018` gear/speed** (`gear = byte[4]/32`) — gave "gear 2" while the dash read neutral.
-- **`0x080` byte[4]/2 as throttle position (TPS/APS)** — stayed at exactly 0.0% through a real throttle-blip test where it should have moved. (The real throttle signal turned out to be `byte[2]` of this same ID, not byte4 — see Confirmed signals above.)
-- **`0x210` bytes 4-5 as direct RPM** — false positive from the hot-idle capture. The 16-bit big-endian value often lands near plausible idle numbers (`1216`, `1344`, `1472`), but raw inspection shows it is a repeating sequence `0x00C0`, `0x01C0`, `0x02C0`, ... `0x09C0` (`192`, `448`, `704`, ... `2496`) cycling every ~1s regardless of RPM. This is counter/phase-like data, not engine speed.
-- **`0x024` byte[3] as throttle position** — early empirical guess (went from 0 to non-zero during an unspecified action) that later showed chaotic, noise-like behavior during a proper blip test — not a clean physical signal.
-- **`0x360` byte[5] as ambient temp** — matched a single 38°C reading, but proved to be a **frozen constant** when a later dash reading of 47°C came in and this byte hadn't moved at all. Same failure mode as the `0x230` battery mistake: one match isn't confirmation. Replaced by `0x300` byte0 (see Confirmed signals).
-- **`0x100` byte[4] as battery voltage** (from the MrCanBus Multistrada 1200 doc) — disproven: it's exactly 0 every time our engine is off, impossible for a real ~12V resting battery.
-- **`0x100` byte[3]/byte[5] as engine/ambient temp** (same doc) — disproven: gives ~168°C and −40°C respectively against confirmed real readings at the same time.
-- **`0x80` byte[5]:byte[6] as RPM** (Panigale/Multistrada1200/Diavel doc, `renatobo/DucatiPanigaleCanBus`) — disproven cleanly: byte5 is frozen at exactly 32 whether the engine is running or off, and byte6 is confirmed to be our known rolling counter (uniform 0-15 in every capture). The formula would always compute ~8192-8207 regardless of real RPM. Makes sense: on the older platform this doc covers (no counter+CRC trailer), byte6 was real data; on our bike it's protocol overhead.
-- **Monster696-doc precise battery formula** (`V = raw/16 + 4.0`, from calibration points `0x60`=10.0V...`0xC0`=16.0V) tested against every byte in our bus — found two coincidental single-state matches (`0x018` byte2=160 always→14.0V regardless of real state; `0x300` byte1=132 always→12.25V regardless of real state) but both are frozen constants that only agreed with one specific ground-truth reading each, failing badly (1.5-1.8V off) against every other reading. Same trap as `0x230` — this bus has several frozen/static bytes that coincidentally satisfy plausible-looking formulas; always cross-check a candidate against multiple different real states before trusting it.
-- **`0x024` byte3, `0x178` byte0, `0x17C` byte0 as RPM** — all were statistically-promising "hump" shapes on smoothed data, but pure noise on raw inspection. The smoothing + "pick the global max across hundreds of bytes" method manufactures false peaks out of noise (a multiple-comparisons trap) — don't trust hump detection on smoothed data alone, always verify raw values show a genuine shape.
-- **`0x018` bytes 4-5 as wheel speed** — two documented formulas tested against our real 4-step (0/2/3/4 km/h) ground truth, both frozen constants regardless of actual speed: MrCanBus's `((byte4%16)*256+byte5)*0.15` → constant 28.80; the Panigale/HLT project's raw `(byte4&0x1F)<<4 + (byte5>>4)` (no scale) → constant 12.00. Neither transfers. Our own formula (byte3 crossing-rate × 0.75, see Confirmed signals) is an independent discovery, not adapted from any documented source.
-- **A directly-encoded, pre-computed speed value elsewhere on the bus** — searched exhaustively (every byte, every ID) for anything monotonically increasing across the 0/2/3/4 km/h ground truth. Nothing found: candidates were either binary threshold flags (`0x018C` byte3: 3→3→255→255), non-monotonic noise (`0x360` byte1 dropped back down at 3 km/h), or single coincidental jumps at one data point only. **Structural conclusion**: unlike older Ducati platforms (Monster 696, Panigale/Multistrada, MTS1200), which broadcast a pre-computed ready-made speed value for the dash to read directly, this generation appears to only broadcast raw wheel-rotation pulse data (`0x018` byte3) and likely expects the dash/consuming module to compute speed itself — our pulse-counting approach isn't a workaround for a simpler value we missed, it may be the only way to derive speed from this bus.
+# Gear --- `0x024`
 
-**Summary: every documented mapping tried from every external source (Monster 696, Panigale/Multistrada1200/Diavel, Scrambler, MrCanBus MTS1200) failed for RPM, gear, throttle position, and battery voltage on this specific bike/generation.** This generation's payload layout is genuinely undocumented publicly. Gear and RPM were both eventually solved anyway through live, controlled, guided testing (see Confirmed signals) rather than by adapting older docs — that approach (deliberate state changes with precisely-known cue timing, cross-checked against exact transition timestamps and raw-value verification) is the template for solving the remaining signals too.
+## Decoder
 
-## Still open / unsolved
-- **Clutch switch state** — actively searched and not found. Test setup: ignition on, engine off, real-time chat-narrated cues (rider sent a one-word message the instant they acted, timestamped against the capture's saved start epoch — see methodology note below) gave a clean squeeze@~11.3s / release@~15.4s window in a 45s capture. Scanned every byte of every ID across the *entire* 45-second capture (not just the narrated window) for any isolated, low-frequency state change (1-6 transitions, excluding the first 0.5s startup). **Result: zero candidates anywhere in the whole capture.** Every byte on the bus was either fully static or continuously varying (rolling counters, RPM, wheel pulses) — nothing in between. A real discrete switch event should have been trivially visible as an isolated bit-flip if present.
-  - **Structural conclusion** (same shape as the speed-value finding): the clutch switch is likely wired directly into the ECU/starter-interlock circuit rather than digitized and broadcast on this shared CAN bus — plausible since it only needs to gate the starter relay, not inform a display.
-  - **Recommended next test** (not yet tried): confirm the switch exists on this bus at all before spending more capture time — e.g. does the dash show a distinct icon/behavior change on clutch-in vs clutch-out with engine off? If the only observable effect is "starter won't engage," that's consistent with a hardwired interlock outside the digital bus, not a bus signal to be found.
-- **Real battery voltage signal** — actively searched and not found. Every attempt (2-point cross-validated fit between 14.0V-running and ~12.2V-off states; single-byte and 16-bit-pair trend correlation against a naturally rising post-start voltage) keeps surfacing `0x180`'s temp byte instead, because temp and voltage are confounded — both drift with "time since engine state changed" in every capture taken so far, so a passive comparison can't tell them apart.
-  - **Recommended next test** (not yet tried): with the bike idling steady, toggle an electrical load (headlight or horn) on for 2-3 seconds then off, and capture through it. This isolates a voltage change from everything else (temp, RPM) staying constant, which should make the real signal unambiguous — if it exists on the bus at all.
-- **Odometer (13704 km, later re-checked at 13937 km) and remaining range (225 km)** — searched for exact matches across **three separate capture attempts** now (8s, 25s, and a thorough 30s exhaustive pass): 2/3/4-byte windows, both endians, and this third attempt widened the scale-factor set to `[1, 0.1, 10, 0.01, 100, 0.5, 2, 0.05, 0.02]`. **Not found in any of the three.** Likely explanations: these update far less frequently than the dashboard refresh (e.g. once every few minutes or once per ignition cycle, so even 30s may not catch an update), or — like battery voltage — they may be computed and stored locally in the dash rather than broadcast on the bus at all, since no other module needs total accumulated mileage for real-time control.
-  - **Real possibility**: some vehicles measure battery voltage locally at the instrument cluster (already wired to +12V) rather than broadcasting it over CAN, in which case this signal may not exist on the bus and this line of investigation is a dead end.
-- **Trip computer values (Trip1 252.7km, Trip2 1965.0km, AvgSpeed1 47km/h) — no reliable match; one promising but ambiguous candidate for AvgCons1/TripTime1**. Ran the same exhaustive multi-scale search simultaneously against six dash readings taken together (ODO, Trip1, AvgCons1, AvgSpeed1, TripTime1, Trip2) over a 120s capture. Trip1, Trip2, and AvgSpeed1 only produced scattered, low-consistency hits (a candidate raw value matching in as few as 1-750 out of ~12,000 frames) — classic multiple-comparisons noise from searching many scale factors across many bytes, not a real signal.
-  - **`ID 0x018, bytes[1:3]` held a perfectly stable raw value of `672` in 100% of frames (11958/11958) for the entire 120s** — genuinely promising, since a real trip-computer value that only updates while riding should indeed be frozen while the bike sits still. Problem: `672` fits **two different plausible interpretations** and there's no way yet to tell which is real: `672 × 0.01 = 6.72` (close to the dash's AvgCons1 reading of 6.7 L/100km) vs. `672 × 0.5 = 336.00` (an **exact** match to TripTime1's 5h36m = 336 minutes). Only one can be the true formula — the other is coincidence, same trap as the RPM/temp confound elsewhere in this doc.
-  - **Resolved — false lead.** Rider reset Trip1 on the dash (252.7km→0.2km, which also reset AvgCons1 9.7→6.7→9.7, AvgSpeed1, and TripTime1 5h36m→1min — turns out all four *do* reset together, contrary to an earlier mid-test misreading). Re-captured after the reset: `0x018` bytes[1:3] was **still exactly `672`**, completely unmoved despite TripTime1 collapsing from 336 minutes to 1. That rules out both original interpretations cleanly — it's a coincidental frozen constant, same trap as several other already-ruled-out signals in this doc, not a real trip-computer value.
-  - **Followed up with a much stronger joint search**: using the pre-reset and post-reset captures together, searched every common ID/byte-window/scale-factor combination requiring the *same* raw value **at both snapshots** to fit both target values (e.g. Trip1 252.7→0.2, AvgCons1 6.7→9.7, TripTime1 336→1 minute) with >50% frame consistency in each. **Zero hits for all five values** (Trip1, AvgCons1, AvgSpeed1, TripTime1, Trip2). This is a far stronger negative than a single-snapshot scale search, since a coincidental match essentially can't survive having to fit two very different real-world values through one formula.
-  - **Structural conclusion**: combined with the odometer's three separate failed searches, the whole trip-computer family (odometer, both trip counters, their averages, trip time) looks like it may not be broadcast on this shared bus at all — likely computed and stored locally in the dash cluster, same theory already suspected for battery voltage, since no other module needs this data for real-time vehicle control.
-  - **Recommended next test**: a real ride, captured through a session, would give genuinely new ground-truth points (especially Trip1/Trip2 both accumulating together in real time while moving, rather than only via manual dash resets) — the strongest remaining shot at finding these if they exist on the bus at all.
-- **Rear brake pedal switch** — actively searched and not found, with a real physical confirmation the switch did engage (rider heard the switch click and saw the brake light come on). Guided chat-narrated press/release test (engine off, ignition on), checked `0x022`'s other bytes first (front brake lives at byte5 on that ID, so adjacent bytes were the natural first guess) and found nothing, then broadened to a full-bus search: exact byte/bit transition-timing correlation against the narrated cues, a window-averaged before/during/after value comparison (loose thresholds), and a raw dump of every single change anywhere in a 5-second window around the press. **Nothing found** — every change detected in that window was already-known background bus chatter (the standard rolling counter+CRC trailer bytes present on every ID, plus the same periodic ~4s/~0.1s heartbeat-style bits that produced false positives on the clutch and kill-switch searches). Sanity-checked the front brake byte (`0x022` byte5) stayed rock-solid at `0x03` (untouched) for the entire capture, confirming the search pipeline itself was working correctly — this is a genuine negative, not a broken test.
-  - **Structural conclusion**: since the rider directly confirmed the brake light activated, the switch is doing *something* electrically — almost certainly a simple mechanical switch wired straight into the brake light's 12V circuit, same as the clutch switch's likely wiring into the starter interlock. Not every switch on the bike needs to be digitized onto the CAN bus if its only job is powering a lamp or gating a relay.
-- ~~**Kill switch state** — was inconclusive via guided testing, now resolved~~. The original guided chat-narrated test failed because the engine never actually died during the narrated kill moments (RPM traced showed continuous running t≈6s-45s, no real event to correlate against). **Resolved afterward by the rider directly inspecting SavvyCAN** — see the confirmed "Starter/kill switch position" entry in Confirmed signals above (`0x080` byte[5]: `0x00`=killed, `0x20`=ready, `0x60`=starting/cranking). **Lesson reinforced**: when a guided chat-narrated test struggles with timing/synchronization, a direct live spot-check in SavvyCAN (as already worked for the front brake direction) can succeed where the remote-narration approach keeps failing — worth reaching for earlier next time a switch test isn't landing.
-- **Wheel speed sensor appears inactive with the engine off** — during a ground-truth calibration attempt (hand-spinning the lifted rear wheel through exactly 10 counted revolutions), `0x018` byte3 showed **zero net movement** (only ±noise, no real drift) despite 10 real revolutions, while RPM read 0 and gear was Neutral throughout (ignition on, engine off). This suggests the wheel-speed byte may only carry live rotation data while the engine is actually running, similar to the byte4 state-dependent behavior seen on `0x100` (see RPM section). All prior wheel-speed calibration (the confirmed 0-3 km/h hand-spin range) was done with the bike in a state where it evidently *did* work, so the existing formula isn't invalidated — but a from-rest hand-spin test with the engine off is not a valid way to gather further calibration data. Any future speed calibration attempts should keep the engine running.
+Stable values:
 
-- **`0x024` bytes[1:2] — not RPM; looks like a coarse RPM-zone/load-band indicator**. Rider spotted this via SavvyCAN as a possible RPM candidate; checked against confirmed RPM (`0x100`) across two 90s captures with multiple real start/stop cycles, including one with a sustained rev to ~3000 RPM. **Ruled out as a direct/linear RPM encoding**, but shows a real, repeatable structure: the combined `byte[1]<<8|byte[2]` value sits at exactly `0` during settled steady-idle (RPM ~1300, unchanging), jumps to a narrow plateau of **~777-782** for RPM roughly in the 1300-1900 range, and jumps to a distinctly higher narrow plateau of **~1041-1049** for RPM roughly 2300 and above — but stays *pinned* in that upper band even as RPM continued climbing from 2316 all the way to 3087 during a sustained hold, i.e. it saturates rather than scaling continuously. **Conclusion: this behaves like a stepped/quantized RPM-zone flag (idle / mid-range / high-range), not a proportional RPM readout** — possibly tied to which ignition or fuel map zone the ECU is using. Not useful as a tachometer substitute, but could be useful as a coarse "what rev band am I in" flag once the exact band boundaries are mapped. **Recommended next test**: hold several distinct steady RPM plateaus (like the original RPM formula's calibration) to find the exact boundary RPM(s) where it steps between bands, and check whether there are more than two nonzero bands at even higher RPM.
-- **`0x023` bytes[2:3] — ruled out as RPM**, also checked against confirmed RPM across the same 90s multi-start-stop capture (and again in an earlier session). Stayed at a constant raw value the entire time regardless of RPM swinging from 0 to 2600+ across five separate engine starts — a frozen constant, not a real signal.
+``` text
+0x00 = Neutral
+0x20 = 1st
+0x40 = 2nd
+0x60 = 3rd
+0x80 = 4th
+0xA0 = 5th
+0xC0 = 6th
+```
 
-## Methodology notes / lessons learned
+Therefore:
 
-- **Operational capture notes from the live setup**: the sniffer serial device is usually `/dev/ttyACM0` or `/dev/ttyACM1`; the CAN bus speed is always `500 kbps` and should not be auto-guessed during routine captures; the sniffer can occasionally lose connection, so verify non-zero CAN frames before trusting a capture. For every capture, keep the normal file and also make a copy in the current project directory. Dashboard RPM displayed as e.g. `1.360` means `1360 RPM`.
-- **Always re-verify a "confirmed" formula with a fresh live capture** before trusting it — don't rely on a user's dash reading matching an old formula without checking the actual current raw byte. The `0x230` battery mistake happened because a verification capture attempt silently failed and the claim was accepted without re-checking.
-- **A match confirmed at two ground-truth points can still be wrong** if both points share a hidden confound. Temp and voltage both drift with time/engine-state, so a byte that tracks one can falsely appear to track the other under a simple 2-point linear fit. Prefer a test that changes only the target variable (e.g. toggling a load) over passively comparing two different points in time.
-- **Best way to find an unknown signal**: capture with a known ground-truth value, search all IDs/byte-positions/plausible scale factors for a stable match, then re-verify against an independent, non-confounded second reading before trusting it.
-- **Bus overheats at idle** if left running stationary without airflow — went 41°C→94°C in one test session. Prefer short, deliberate action tests over long stationary running-engine sessions.
-- **Serial capture technique**: `stty -F /dev/ttyACM1 115200 raw -echo` then plain `cat /dev/ttyACM1` works reliably for reading. Writing commands to the port via separate `printf > /dev/ttyACM1` opens is unreliable and can visibly disrupt a concurrent read — avoid combining writes and reads on the same port from a script; use the device's own interactive serial monitor (`pio device monitor` / VS Code) if runtime commands are needed.
-- **Real-time chat narration beats pre-scheduled cue timing for guided tests**: an early attempt at the clutch-switch test used a script that printed timed cues (e.g. "squeeze now" at a fixed t=4s) for the rider to follow — this failed repeatedly, because a schedule the rider has to track from memory (or a live terminal they may not even be watching) drifts out of sync with the capture's actual clock by several seconds, easily enough to miss a brief transition entirely. What worked: start the capture as a **background** process, have the rider send a short chat message (e.g. a single letter) the *instant* they physically act, and timestamp that message's arrival against the capture's own saved start epoch (write it to a `.start` file when the capture opens the serial port). This gives sub-second-accurate correlation with zero advance scheduling. Must run the capture in the background, not foreground — a blocking foreground call can't react to incoming chat messages in real time, so any cues sent during it only arrive bundled together after it finishes, with no usable timing at all.
+``` text
+gear = D5 / 32
+```
 
-## Community sources checked (none transfer cleanly, but useful corroboration)
+The following sequence was observed and matched the physical/dashboard
+gear changes:
 
-Same pattern every time: older Ducati docs (2009-2014 platforms) keep reusing the same arbitration IDs our 2021 bike also uses (`0x080`, `0x100`, `0x018`, `0x150`, `0x300`, `0x360`, `0x020` all recur), which is strong evidence Ducati has assigned these IDs to the same general purpose for 15+ years — but every specific byte-offset formula from these sources fails when tested against our actual bike, because the newer generation's added counter+CRC trailer shifted the internal payload layout. No public source documents the 2021+ generation specifically.
+``` text
+N → 1st → N → 2nd → 3rd → 2nd → N → 1st → N
+```
 
-- **[GitHub - MrCanBus/MTS1200-CANBUS](https://github.com/MrCanBus/MTS1200-CANBUS)** (Multistrada 1200, 2010-2014): claims `0x100` byte3−40=engine temp, byte4=battery voltage (raw), byte5−40=ambient temp; `0x018` byte4/5=gear+speed (`gearPOS=((byte4/16)-1)/2`, `speed=((byte4%16)*256+byte5)*0.15`); `0x080` byte5-6=RPM (`byte5*256+byte6`), byte0/1=throttle sensors.
-  - Tested `0x100` byte4 as battery → **disproven**: it's exactly 0 every time our engine is off, impossible for a real ~12V resting battery reading (this is the same byte we'd already flagged as RPM/engine-state-correlated from an earlier test).
-  - Tested `0x100` byte3−40 as engine temp → **disproven**: gives ~168°C against our confirmed real ~88-93°C at the same time.
-  - Tested `0x100` byte5−40 as ambient temp → **disproven**: gives −40°C against our confirmed real 38°C.
-- **[GitHub - astephensen/Scrambler](https://github.com/astephensen/Scrambler)** (Ducati Scrambler, model/year unconfirmed): claims `0x201` byte for battery voltage (raw÷10, e.g. `0x7D`=125→12.5V), `0x100` for neutral/RPM/kill switch. Not yet tested against our bus (ID `0x201` not confirmed present in our captures).
-- **[Adventures with the Ducati CAN bus](https://pulsesecurity.co.nz/articles/ducati-can-bus)** (Ducati 848, 2009): `0x80` bytes3-4=RPM, byte5=TPS (0-0xC8 range); `0x20` byte1=ambient temp (−40 offset), byte3=immobilizer flag. Not yet tested against our bus.
+During an actual shift, transient intermediate values can appear. These
+should not be decoded as stable gears.
 
-## Current firmware state
+------------------------------------------------------------------------
 
-The board currently runs **ESP32RET** (a separate PlatformIO project at `/home/dawid/Documents/pio-esp32ret`, not this repo) — official GVRET-protocol firmware adapted for our XIAO ESP32-S3 + SN65HVD230 wiring, letting SavvyCAN connect live for its full graphing/filtering/DBC-building toolset. Forced to listen-only mode by default for safety on the live bike bus. Serial runs at 1,000,000 baud in the binary GVRET protocol (not human-readable without a decoder). A Python parser for this binary format was written (`/tmp/.../scratchpad/gvret_capture.py`, not part of the repo) enabling live guided captures the same way as the old raw sniffer, without needing SavvyCAN's GUI running at the same time.
+# Wheel Speed --- `0x018 D3:D4`
 
-This repo's own `src/main.cpp` (the confirmed-signals dashboard) is not currently flashed — the board is still running ESP32RET/GVRET — but the source now includes the calibrated throttle `%` output (see Confirmed signals) and builds clean. To go back to the dashboard, reflash from `/home/dawid/Documents/pio`. The RPM formula is fully reconfirmed (see RPM section above) with a refined scale of `4.02` (the code uses a rounded `4.0`).
+## Final decoder
+
+The wheel-speed signal is a 16-bit big-endian value formed by D3:D4:
+
+``` text
+raw = (D3 << 8) | D4
+```
+
+The observed zero-speed baseline is:
+
+``` text
+0xA000
+```
+
+Current decoder:
+
+``` text
+wheel_speed_kmh = (raw - 0xA000) / 16.0
+```
+
+or:
+
+``` text
+wheel_speed_kmh = ((((D3 << 8) | D4) - 0xA000) / 16.0)
+```
+
+Resolution:
+
+``` text
+1 count = 0.0625 km/h
+```
+
+## Important: D4 alone is NOT the speed
+
+Initial experiments focused on D4 alone because it changed while
+manually spinning the rear wheel.
+
+At low speed this produced an apparently useful relationship, but
+higher-speed captures showed that D3 changes from values such as:
+
+``` text
+0xA0 → 0xA1 → 0xA2 ...
+```
+
+while D4 continues to oscillate.
+
+Therefore D4 must not be decoded independently.
+
+The complete D3:D4 16-bit value is required.
+
+## Validation captures
+
+The following controlled tests were used:
+
+  -----------------------------------------------------------------------
+  Test                            Approx. speed       Typical raw value /
+                                                                   offset
+  ------------------- ------------------------- -------------------------
+  Rear wheel manually                  \~3 km/h           `0xA036` / \~54
+  spun                                          
+
+  Rear wheel manually                  \~4 km/h           `0xA048` / \~72
+  spun                                          
+
+  1st gear                \~12--14 km/h, mostly   around `0xA0DB` / \~219
+                                           \~13 
+
+  2nd gear                        \~16--22 km/h             approximately
+                                                       `0xA0E4`--`0xA162`
+
+  1st-gear speed               increasing speed       up to approximately
+  sweep                                           `0xA2C6` / \~710 offset
+  -----------------------------------------------------------------------
+
+The low-speed tests initially suggested:
+
+``` text
+D4 / 18
+```
+
+but this was rejected after the 2nd-gear test because D4 alone no longer
+represented the speed.
+
+## Independent RPM + gearing validation
+
+The strongest validation used the already-confirmed RPM and gear
+signals.
+
+Theoretical rear-wheel speed can be calculated from:
+
+``` text
+wheel_speed =
+    RPM
+    / (primary_ratio × gear_ratio × final_ratio)
+    × rear_tyre_circumference
+    × 60 / 1000
+```
+
+For the nominal 180/55 ZR17 rear tyre, circumference is approximately
+1.98 m.
+
+The 1st-gear speed-sweep capture showed approximately:
+
+``` text
+correlation R ≈ 0.994
+```
+
+between theoretical rear-wheel speed and:
+
+``` text
+0x018 D3:D4 - 0xA000
+```
+
+Candidate scaling was also compared:
+
+``` text
+offset / 16 → best fit
+offset / 17 → significantly worse
+offset / 18 → significantly worse
+```
+
+This strongly supports:
+
+``` text
+wheel_speed_kmh = (raw - 0xA000) / 16
+```
+
+The 1st-vs-2nd gear comparison is also consistent with wheel speed: at
+the same engine RPM, the rear wheel rotates faster in 2nd gear and the
+`0x018 D3:D4` value increases accordingly.
+
+## Current status
+
+**`0x018 D3:D4` is considered CONFIRMED as the wheel-speed signal for
+the tested Monster 937.**
+
+A future GPS comparison at normal road speed would still be useful as an
+independent final calibration, but the signal is already sufficiently
+validated for the planned telemetry logger.
+
+------------------------------------------------------------------------
+
+# Throttle Position --- `0x080 D3`
+
+D3 is not a simple absolute 0--255 percentage.
+
+It behaves as an incremental/wrapping encoder.
+
+## Decoder
+
+``` text
+delta = raw - lastRaw
+
+if delta > 127:
+    delta -= 256
+
+if delta < -127:
+    delta += 256
+
+accum += delta
+
+pct = clamp((accum - 188) / 610 * 100, 0, 100)
+```
+
+Calibration obtained from repeated tests:
+
+``` text
+closed/rest ≈ 188 (0xBC)
+full travel ≈ 610 counts
+```
+
+The reported value should always be clamped to 0--100%.
+
+------------------------------------------------------------------------
+
+# Front Brake Lever --- `0x022 D6`
+
+Current calibrated decoder:
+
+``` text
+pct = clamp((D6 - 3) / 248 * 100, 0, 100)
+```
+
+Observed calibration points:
+
+``` text
+0x03 = 0% / lever released
+0x83 ≈ 50%
+0xFB = 100% / maximum squeeze
+```
+
+------------------------------------------------------------------------
+
+# Starter / Kill Switch --- `0x080 D6`
+
+Confirmed states:
+
+``` text
+0x00 = killed / kill switch off
+0x20 = run / ready
+0x60 = starting / cranking
+```
+
+This signal should be used to determine engine state rather than relying
+only on RPM reaching zero.
+
+------------------------------------------------------------------------
+
+# Engine Temperature --- `0x180 D6`
+
+Decoder:
+
+``` text
+temperature_C = D6 - 40
+```
+
+Validated during engine warm-up and temperature changes.
+
+------------------------------------------------------------------------
+
+# Ambient Temperature --- `0x300 D1`
+
+Decoder:
+
+``` text
+temperature_C = D1 - 40
+```
+
+Validated against the dashboard/environmental temperature.
+
+------------------------------------------------------------------------
+
+# Side Stand --- `0x024 D6`
+
+Current mapping:
+
+``` text
+0x00 = side stand down
+0x20 = side stand up
+```
+
+Observed directly during live testing.
+
+A dedicated repeat test would still be useful.
+
+------------------------------------------------------------------------
+
+# CAN Frame Structure
+
+Observed frames are 8 bytes long.
+
+A 2-byte trailer is present on observed messages:
+
+-   second-to-last byte: rolling counter, typically `0x00`--`0x0F`
+-   last byte: checksum/CRC
+
+The exact CRC algorithm has not yet been fully documented.
+
+This is important for future active CAN communication, but it is not
+required for listen-only telemetry capture.
+
+------------------------------------------------------------------------
+
+# Ruled Out / Rejected Hypotheses
+
+## `0x018 D4` as direct wheel speed
+
+Rejected.
+
+D4 alone appeared promising during low-speed manual wheel-spin tests but
+failed at higher speeds because D3 participates in the value.
+
+The correct signal is:
+
+``` text
+0x018 D3:D4
+```
+
+## `0x018 D4` frequency / crossing-rate decoder
+
+An early hypothesis was:
+
+``` text
+count rising edges above threshold
+frequency × 0.75 = km/h
+```
+
+This was useful for investigating the low-speed waveform but does not
+describe the higher-speed captures and is no longer considered the
+wheel-speed decoder.
+
+## `0x230` as battery voltage
+
+An apparent `28 / 2 = 14 V` match was observed, but the value remained
+frozen and did not track battery voltage.
+
+Rejected.
+
+## `0x100` as RPM
+
+Several candidate byte combinations produced plausible-looking values in
+isolated frames but failed against real engine RPM.
+
+Rejected.
+
+## `0x080 D5` as throttle
+
+Rejected after real throttle-blip tests.
+
+The useful throttle signal is D3.
+
+## `0x210` as RPM
+
+The values behave like a repeating counter/phase signal and do not track
+RPM.
+
+Rejected.
+
+## Older Ducati CAN formulas
+
+Mappings from older Ducati models were tested where applicable but did
+not transfer reliably to the 2021 Monster 937.
+
+------------------------------------------------------------------------
+
+# Still Unsolved
+
+## Clutch switch
+
+No reliable CAN signal identified.
+
+The clutch switch may be directly wired into the starter/interlock
+circuit rather than broadcast over CAN.
+
+## Battery voltage
+
+No reliable CAN voltage signal identified.
+
+## Odometer / remaining range
+
+No reliable mapping identified.
+
+## Trip computer
+
+Trip 1, Trip 2, average consumption, average speed and trip time remain
+unresolved.
+
+## Rear brake switch
+
+Brake-light operation was confirmed physically, but no corresponding CAN
+signal has been reliably identified.
+
+------------------------------------------------------------------------
+
+# Current Telemetry Decoder
+
+The currently usable signals for the planned ESP32 → Bluetooth → Android
+→ CSV → GoPro Telemetry Overlay pipeline are:
+
+``` text
+RPM:
+    CAN ID 0x024
+    raw = (D3 << 8) | D4
+    rpm = raw / 2
+
+Gear:
+    CAN ID 0x024
+    gear = D5 / 32
+
+Wheel speed:
+    CAN ID 0x018
+    raw = (D3 << 8) | D4
+    speed_kmh = (raw - 0xA000) / 16.0
+
+Throttle:
+    CAN ID 0x080
+    incremental encoder on D3
+    unwrap + accumulate
+    pct = clamp((accum - 188) / 610 * 100, 0, 100)
+
+Front brake:
+    CAN ID 0x022
+    pct = clamp((D6 - 3) / 248 * 100, 0, 100)
+
+Engine temperature:
+    CAN ID 0x180
+    temp_C = D6 - 40
+
+Ambient temperature:
+    CAN ID 0x300
+    temp_C = D1 - 40
+
+Engine state:
+    CAN ID 0x080
+    D6:
+        0x00 = killed
+        0x20 = run
+        0x60 = starting
+```
+
+------------------------------------------------------------------------
+
+# Confidence Summary
+
+``` text
+RPM                  CONFIRMED
+Gear                 CONFIRMED
+Wheel speed           CONFIRMED
+Throttle             CONFIRMED / calibrated
+Front brake          CONFIRMED / calibrated
+Engine temperature   CONFIRMED
+Ambient temperature  CONFIRMED
+Kill/start state     CONFIRMED
+Side stand           CONFIRMED, repeat test recommended
+
+Clutch switch        UNSOLVED
+Rear brake switch    UNSOLVED
+Battery voltage      UNSOLVED
+Odometer             UNSOLVED
+Trip computer        UNSOLVED
+CRC algorithm        UNSOLVED
+```
+
+------------------------------------------------------------------------
+
+# Telemetry Logger Notes
+
+The planned architecture is:
+
+``` text
+Ducati CAN bus
+      ↓
+ESP32 + CAN transceiver
+      ↓
+decode confirmed CAN signals
+      ↓
+Bluetooth
+      ↓
+Android phone
+      ↓
+phone timestamp
+      ↓
+CSV export
+      ↓
+GoPro Telemetry Overlay
+```
+
+For the first implementation, a telemetry transmission rate of
+approximately **2 samples/second** is a reasonable starting point.
+
+The ESP32 should continue receiving and decoding CAN frames at the
+native CAN message rate, while the Bluetooth telemetry packet can be
+generated at a lower fixed rate.
+
+The firmware should retain access to the raw CAN frames/debug data so
+additional signals can be added later without changing the CAN capture
+hardware.
