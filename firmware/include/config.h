@@ -35,11 +35,11 @@
 #define ID_RPM       0x024
 #define ID_GEAR      0x024
 #define ID_SPEED     0x018
-#define ID_THROTTLE  0x080
+#define ID_THROTTLE  0x024
 #define ID_BRAKE     0x022
 #define ID_ENGTEMP   0x180
 #define ID_AIRTEMP   0x300
 
 // Confirmed decoder calibration
-constexpr uint8_t THROTTLE_CLOSED_RAW = 188;
-constexpr float THROTTLE_FULL_SCALE = 610.0f;
+// 0x024 D1: 0x00 = 0%, 0xC8 = 100%.
+constexpr float THROTTLE_FULL_RAW = 200.0f;
