@@ -19,11 +19,10 @@ data class Telemetry(
 object TelemetryDecoder {
     const val PACKET_SIZE = 19
 
-    fun decode(data: ByteArray, phoneTimestampMs: Long = System.currentTimeMillis()): Telemetry? {
+    fun decode(data: ByteArray, phoneTimestampMs: Long): Telemetry? {
         if (data.size != PACKET_SIZE) return null
 
         val b = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
-
         val sequence = b.int.toLong() and 0xffffffffL
         val espTimeMs = b.int.toLong() and 0xffffffffL
         val rpm = b.short.toInt() and 0xffff
@@ -35,16 +34,8 @@ object TelemetryDecoder {
         val ambientTemp = b.get().toInt()
 
         return Telemetry(
-            sequence = sequence,
-            espTimeMs = espTimeMs,
-            rpm = rpm,
-            gear = gear,
-            speedKmh = speed,
-            throttlePercent = throttle,
-            frontBrakePercent = brake,
-            engineTempC = engineTemp,
-            ambientTempC = ambientTemp,
-            phoneTimestampMs = phoneTimestampMs
+            sequence, espTimeMs, rpm, gear, speed, throttle, brake,
+            engineTemp, ambientTemp, phoneTimestampMs
         )
     }
 }

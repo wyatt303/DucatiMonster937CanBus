@@ -1,23 +1,51 @@
 # Ducati Monster 937 Android App
 
-Android application for the Ducati Monster 937 BLE telemetry logger.
+Native Kotlin Android application for the Ducati Monster 937 CAN/BLE telemetry logger.
 
-## Current state
+## Version
 
-- BLE scan for `Ducati-Monster-937`
-- Connect over BLE
-- Discover the Ducati BLE service
-- Subscribe to telemetry notifications
-- Decode the 19-byte binary telemetry packet
-- Add Android wall-clock timestamps
-- Display live telemetry
+**0.1.0**
 
-## Planned
+- Minimum Android: **12 / API 31**
+- Compile SDK: **35**
+- Target SDK: **35**
+- Java: **17**
 
-- Recording start/stop
-- CSV export
-- OTA firmware selection/upload
-- Firmware version display
-- Connection diagnostics
-- Dropped-packet detection
-- Improved dashboard UI
+## Implemented
+
+- BLE permissions for Android 12+
+- Scan for `Ducati-Monster-937`
+- BLE connection and service discovery
+- 19-byte binary telemetry decoding
+- Live RPM, gear, speed, throttle, front brake, engine and ambient temperature
+- Android wall-clock timestamp on packet reception
+- BLE sequence/drop detection
+- Start/stop recording
+- CSV export through the Android document picker
+
+## Not yet implemented
+
+- BLE firmware OTA UI
+- Background recording service
+- GPS
+- GoPro telemetry export
+- Settings
+- Advanced dashboard
+
+## Build
+
+```bash
+./gradlew assembleDebug
+```
+
+Install:
+
+```bash
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+Protocol:
+
+```text
+../protocol/BLE_PROTOCOL.md
+```

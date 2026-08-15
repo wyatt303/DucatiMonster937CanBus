@@ -1,99 +1,239 @@
 package pl.linuch.ducatitelemetry
 
 import android.Manifest
+import android.app.Activity
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Bundle
 import android.widget.Button
-import android.widget.LinearLayout
 import android.widget.TextView
-import androidx.activity.ComponentActivity
-import android.content.pm.PackageManager
+import android.widget.Toast
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
-class MainActivity : ComponentActivity() {
+class MainActivity : Activity() {
+
+    companion object {
+        private const val REQUEST_BLE = 100
+        private const val CREATE_CSV = 200
+    }
+
     private lateinit var status: TextView
-    private lateinit var telemetryText: TextView
-    private var ble: DucatiBleClient? = null
+    private lateinit var rpm: TextView
+    private lateinit var gear: TextView
+    private lateinit var speed: TextView
+    private lateinit var throttle: TextView
+    private lateinit var brake: TextView
+    private lateinit var engine: TextView
+    private lateinit var ambient: TextView
+    private lateinit var packets: TextView
+
+    private lateinit var connect: Button
+    private lateinit var record: Button
+    private lateinit var export: Button
+
+    private lateinit var ble: DucatiBleClient
+    private val recorder = CsvRecorder()
+
+    private var connected = false
+    private var recording = false
+    private var packetCount = 0L
+    private var dropped = 0L
+    private var lastSequence: Long? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_main)
 
-        status = TextView(this).apply {
-            textSize = 18f
-            text = "Disconnected"
-        }
+        status = findViewById(R.id.connectionStatus)
+        rpm = findViewById(R.id.rpmValue)
+        gear = findViewById(R.id.gearValue)
+        speed = findViewById(R.id.speedValue)
+        throttle = findViewById(R.id.throttleValue)
+        brake = findViewById(R.id.brakeValue)
+        engine = findViewById(R.id.engineTempValue)
+        ambient = findViewById(R.id.ambientTempValue)
+        packets = findViewById(R.id.packetInfo)
 
-        telemetryText = TextView(this).apply {
-            textSize = 20f
-            text = "No telemetry"
-        }
-
-        val scanButton = Button(this).apply {
-            text = "Connect to Ducati"
-            setOnClickListener {
-                if (hasBluetoothPermission()) {
-                    ble?.startScan()
-                } else {
-                    requestPermissions(
-                        arrayOf(
-                            Manifest.permission.BLUETOOTH_SCAN,
-                            Manifest.permission.BLUETOOTH_CONNECT
-                        ),
-                        100
-                    )
-                }
-            }
-        }
-
-        val layout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(32, 32, 32, 32)
-            addView(status)
-            addView(scanButton)
-            addView(telemetryText)
-        }
-
-        setContentView(layout)
+        connect = findViewById(R.id.connectButton)
+        record = findViewById(R.id.recordButton)
+        export = findViewById(R.id.exportButton)
 
         ble = DucatiBleClient(
             this,
-            onTelemetry = { t ->
+            onConnectionChanged = { isConnected, message ->
                 runOnUiThread {
-                    telemetryText.text = """
-                        RPM: ${t.rpm}
-                        Gear: ${t.gear}
-                        Speed: %.2f km/h
-                        Throttle: %.2f %%
-                        Front brake: %.2f %%
-                        Engine: ${t.engineTempC} °C
-                        Ambient: ${t.ambientTempC} °C
-                        Sequence: ${t.sequence}
-                    """.trimIndent().format(
-                        t.speedKmh,
-                        t.throttlePercent,
-                        t.frontBrakePercent
-                    )
+                    connected = isConnected
+                    status.text = message
+                    connect.text = if (isConnected) "Disconnect" else "Connect"
+                    record.isEnabled = isConnected
                 }
             },
-            onConnectionChanged = { connected ->
+            onTelemetry = { telemetry ->
                 runOnUiThread {
-                    status.text =
-                        if (connected) "BLE Connected"
-                        else "BLE Disconnected"
+                    showTelemetry(telemetry)
                 }
             }
         )
+
+        connect.setOnClickListener {
+            if (connected) {
+                ble.disconnect()
+            } else if (hasBlePermissions()) {
+                ble.startScan()
+            } else {
+                requestBlePermissions()
+            }
+        }
+
+        record.setOnClickListener {
+            if (recording) {
+                recording = false
+                record.text = "Start recording"
+                export.isEnabled = !recorder.isEmpty()
+            } else {
+                recorder.start()
+                recording = true
+                record.text = "Stop recording"
+                export.isEnabled = false
+            }
+        }
+
+        export.setOnClickListener {
+            exportCsv()
+        }
+
+        if (!hasBlePermissions()) {
+            requestBlePermissions()
+        }
     }
 
-    private fun hasBluetoothPermission(): Boolean {
-        return checkSelfPermission(
-            Manifest.permission.BLUETOOTH_SCAN
-        ) == PackageManager.PERMISSION_GRANTED &&
-        checkSelfPermission(
-            Manifest.permission.BLUETOOTH_CONNECT
-        ) == PackageManager.PERMISSION_GRANTED
+    private fun hasBlePermissions(): Boolean {
+        val scanGranted =
+            checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) ==
+                PackageManager.PERMISSION_GRANTED
+
+        val connectGranted =
+            checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) ==
+                PackageManager.PERMISSION_GRANTED
+
+        return scanGranted && connectGranted
+    }
+
+    private fun requestBlePermissions() {
+        requestPermissions(
+            arrayOf(
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_CONNECT
+            ),
+            REQUEST_BLE
+        )
+    }
+
+    private fun showTelemetry(t: Telemetry) {
+        packetCount++
+
+        val previousSequence = lastSequence
+
+        if (previousSequence != null && t.sequence > previousSequence + 1) {
+            dropped += t.sequence - previousSequence - 1
+        }
+
+        lastSequence = t.sequence
+
+        rpm.text = t.rpm.toString()
+
+        val gearText = if (t.gear == 0) {
+            "N"
+        } else {
+            t.gear.toString()
+        }
+
+        gear.text = "Gear $gearText"
+
+        speed.text =
+            "Speed %.2f km/h".format(Locale.US, t.speedKmh)
+
+        throttle.text =
+            "Throttle %.2f %%".format(Locale.US, t.throttlePercent)
+
+        brake.text =
+            "Front brake %.2f %%".format(Locale.US, t.frontBrakePercent)
+
+        engine.text =
+            "Engine ${t.engineTempC} °C"
+
+        ambient.text =
+            "Ambient ${t.ambientTempC} °C"
+
+        packets.text =
+            "Packets $packetCount   Sequence ${t.sequence}   Dropped $dropped"
+
+        if (recording) {
+            recorder.append(t)
+        }
+    }
+
+    private fun exportCsv() {
+        if (recorder.isEmpty()) {
+            Toast.makeText(
+                this,
+                "No telemetry recorded",
+                Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+
+        val timestamp = SimpleDateFormat(
+            "yyyyMMdd-HHmmss",
+            Locale.US
+        ).format(Date())
+
+        val filename = "ducati-telemetry-$timestamp.csv"
+
+        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            type = "text/csv"
+            putExtra(Intent.EXTRA_TITLE, filename)
+        }
+
+        startActivityForResult(intent, CREATE_CSV)
+    }
+
+    @Deprecated("Activity Result API can be introduced later.")
+    override fun onActivityResult(
+        requestCode: Int,
+        resultCode: Int,
+        data: Intent?
+    ) {
+        super.onActivityResult(requestCode, resultCode, data)
+
+        if (requestCode == CREATE_CSV && resultCode == RESULT_OK) {
+            val uri: Uri = data?.data ?: return
+
+            try {
+                contentResolver.openOutputStream(uri)?.use { output ->
+                    recorder.writeTo(output)
+                }
+
+                Toast.makeText(
+                    this,
+                    "CSV exported",
+                    Toast.LENGTH_SHORT
+                ).show()
+            } catch (e: Exception) {
+                Toast.makeText(
+                    this,
+                    "CSV export failed: ${e.message}",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
     }
 
     override fun onDestroy() {
-        ble?.disconnect()
+        ble.disconnect()
         super.onDestroy()
     }
 }

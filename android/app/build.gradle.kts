@@ -9,10 +9,14 @@ android {
 
     defaultConfig {
         applicationId = "pl.linuch.ducatitelemetry"
-        minSdk = 26
+        minSdk = 31
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 }
 
