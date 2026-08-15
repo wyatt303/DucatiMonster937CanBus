@@ -13,7 +13,7 @@ static uint8_t lastThrottleRaw = 0;
 // Speed signal is an absolute calibrated D3:D4 value.
 static float decodeSpeedKmh(const CanFrame &f)
 {
-    uint16_t raw = ((uint16_t)f.data[3] << 8) | f.data[4];
+    uint16_t raw = ((uint16_t)f.data[2] << 8) | f.data[3];
 
     if (raw <= 0xA000) {
         return 0.0f;
@@ -52,7 +52,7 @@ static float decodeThrottlePct(const CanFrame &f)
 
 static float decodeBrakePct(const CanFrame &f)
 {
-    float pct = ((float)f.data[6] - 3.0f) / 248.0f * 100.0f;
+    float pct = ((float)f.data[5] - 3.0f) / 248.0f * 100.0f;
     return constrain(pct, 0.0f, 100.0f);
 }
 
