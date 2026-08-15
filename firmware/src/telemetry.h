@@ -2,7 +2,7 @@
 #include <Arduino.h>
 #include <ESP32-TWAI-CAN.hpp>
 
-struct Telemetry {
+struct __attribute__((packed)) Telemetry {
     uint32_t sequence;
     uint32_t espTimeMs;
     uint16_t rpm;

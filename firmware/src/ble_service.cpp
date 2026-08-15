@@ -104,6 +104,9 @@ void bleSendTelemetry(const uint8_t *data, size_t length)
         return;
     }
 
-    telemetryCharacteristic->setValue(data, length);
+    telemetryCharacteristic->setValue(
+    const_cast<uint8_t *>(data),
+    length
+    );
     telemetryCharacteristic->notify();
 }
