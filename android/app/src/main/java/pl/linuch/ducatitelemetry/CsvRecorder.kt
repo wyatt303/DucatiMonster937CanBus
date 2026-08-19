@@ -12,7 +12,7 @@ class CsvRecorder {
 
     fun start() {
         rows.clear()
-        rows += "timestamp,sequence,esp_time_ms,rpm,gear,speed_kmh,throttle_percent,front_brake_percent,engine_temp_c,ambient_temp_c"
+        rows += "utc (ms),sequence,esp time (ms),engine (rpm),gear,speed (km/h),throttle (%),front brake (%),engine temperature (°C),ambient temperature (°C)"
     }
 
     fun append(t: Telemetry) {
