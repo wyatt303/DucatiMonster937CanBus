@@ -1,10 +1,15 @@
-# Ducati Monster 937 (2021) --- CAN Bus Reverse Engineering Findings
+# Ducati Monster 937 (2021) — CAN Bus Reverse Engineering Findings
 
 Reverse engineering notes for the 2021 Ducati Monster 937 CAN bus.
 
-Hardware used during testing: - Seeed XIAO ESP32-S3 - Waveshare
-SN65HVD230 CAN transceiver - SavvyCAN for capture and analysis - CAN bus
-speed: 500 kbps - 11-bit standard CAN IDs - 8-byte CAN frames
+Hardware used during testing:
+
+- Seeed XIAO ESP32-S3
+- Waveshare SN65HVD230 CAN transceiver
+- SavvyCAN for capture and analysis
+- CAN bus speed: 500 kbps
+- 11-bit standard CAN IDs
+- 8-byte CAN frames
 
 All captures were performed in CAN listen-only mode.
 
@@ -12,54 +17,39 @@ All captures were performed in CAN listen-only mode.
 
 # Confirmed Signals
 
-  ------------------------------------------------------------------------------------------------
-  Signal         CAN ID         Bytes          Decoder                             Status
-  -------------- -------------- -------------- ----------------------------------- ---------------
-  Engine RPM     `0x024`        D3:D4          `((D3 << 8) \| D4) / 2`             **CONFIRMED**
+| Signal | CAN ID | Bytes | Decoder | Status |
+|---|---|---|---|---|
+| Engine RPM | `0x024` | D3:D4 | `((D3 << 8) \| D4) / 2` | **CONFIRMED** |
+| Gear | `0x024` | D5 | `D5 / 32` | **CONFIRMED** |
+| Wheel speed | `0x018` | D3:D4 | `((D3 << 8) \| D4 - 0xA000) / 16` | **CONFIRMED** |
+| Engine temperature | `0x180` | D5 | `D5 - 40` | **CONFIRMED** |
+| Ambient temperature | `0x300` | D1 | `D1 - 40` | **CONFIRMED** |
+| Throttle position | `0x024` | D1 | `D1 / 2.0` → 0–100% | **CONFIRMED / calibrated** |
+| Front brake lever | `0x022` | D6 | `(D6 - 3) / 248 * 100` | **CONFIRMED / calibrated** |
+| Starter / kill switch | `0x080` | D6 | State values, see below | **CONFIRMED** |
+| Side stand | `0x024` | D6 | `0x00 = down`, `0x20 = up` | **CONFIRMED** |
 
-  Gear           `0x024`        D5             `D5 / 32`                           **CONFIRMED**
-
-  Wheel speed    `0x018`        D3:D4          `((D3 << 8) \| D4 - 0xA000) / 16`   **CONFIRMED**
-
-  Engine         `0x180`        D5             `D5 - 40`                           **CONFIRMED**
-  temperature                                                                      
-
-  Ambient        `0x300`        D1             `D1 - 40`                           **CONFIRMED**
-  temperature                                                                      
-
-  Throttle       `0x080`        D3             Incremental encoder, see below      **CONFIRMED /
-  position                                                                         calibrated**
-
-  Front brake    `0x022`        D6             `(D6 - 3) / 248 * 100`              **CONFIRMED /
-  lever                                                                            calibrated**
-
-  Starter / kill `0x080`        D6             State values, see below             **CONFIRMED**
-  switch                                                                           
-
-  Side stand     `0x024`        D6             `0x00 = down`, `0x20 = up`          **CONFIRMED**
-  ------------------------------------------------------------------------------------------------
-
-> Note: Byte numbering in this document is zero-based: D1 = byte\[0\],
-> D2 = byte\[1\], etc.
+> Note: Byte numbering in this document is zero-based: D1 = byte[0],
+> D2 = byte[1], etc.
 
 ------------------------------------------------------------------------
 
-# Engine RPM --- `0x024`
+# Engine RPM — `0x024`
 
 ## Decoder
 
-``` text
+```text
 raw = (D3 << 8) | D4
 RPM = raw / 2
 ```
 
 This signal was validated using multiple captures:
 
--   cold-engine idle: approximately 1960--2100 RPM
--   hot-engine idle: approximately 1280--1450 RPM
--   engine startup
--   engine speed above 4000 RPM
--   engine shutdown
+- cold-engine idle: approximately 1960–2100 RPM
+- hot-engine idle: approximately 1280–1450 RPM
+- engine startup
+- engine speed above 4000 RPM
+- engine shutdown
 
 The Ducati dashboard can show values such as `1.960` or `2.100`. These
 represent approximately 1960 and 2100 RPM; the dot is a thousands
@@ -67,13 +57,13 @@ separator/display formatting and is not part of the CAN encoding.
 
 ------------------------------------------------------------------------
 
-# Gear --- `0x024`
+# Gear — `0x024`
 
 ## Decoder
 
 Stable values:
 
-``` text
+```text
 0x00 = Neutral
 0x20 = 1st
 0x40 = 2nd
@@ -85,14 +75,14 @@ Stable values:
 
 Therefore:
 
-``` text
+```text
 gear = D5 / 32
 ```
 
 The following sequence was observed and matched the physical/dashboard
 gear changes:
 
-``` text
+```text
 N → 1st → N → 2nd → 3rd → 2nd → N → 1st → N
 ```
 
@@ -101,37 +91,37 @@ should not be decoded as stable gears.
 
 ------------------------------------------------------------------------
 
-# Wheel Speed --- `0x018 D3:D4`
+# Wheel Speed — `0x018 D3:D4`
 
 ## Final decoder
 
 The wheel-speed signal is a 16-bit big-endian value formed by D3:D4:
 
-``` text
+```text
 raw = (D3 << 8) | D4
 ```
 
 The observed zero-speed baseline is:
 
-``` text
+```text
 0xA000
 ```
 
 Current decoder:
 
-``` text
+```text
 wheel_speed_kmh = (raw - 0xA000) / 16.0
 ```
 
 or:
 
-``` text
+```text
 wheel_speed_kmh = ((((D3 << 8) | D4) - 0xA000) / 16.0)
 ```
 
 Resolution:
 
-``` text
+```text
 1 count = 0.0625 km/h
 ```
 
@@ -143,7 +133,7 @@ manually spinning the rear wheel.
 At low speed this produced an apparently useful relationship, but
 higher-speed captures showed that D3 changes from values such as:
 
-``` text
+```text
 0xA0 → 0xA1 → 0xA2 ...
 ```
 
@@ -157,29 +147,17 @@ The complete D3:D4 16-bit value is required.
 
 The following controlled tests were used:
 
-  -----------------------------------------------------------------------
-  Test                            Approx. speed       Typical raw value /
-                                                                   offset
-  ------------------- ------------------------- -------------------------
-  Rear wheel manually                  \~3 km/h           `0xA036` / \~54
-  spun                                          
-
-  Rear wheel manually                  \~4 km/h           `0xA048` / \~72
-  spun                                          
-
-  1st gear                \~12--14 km/h, mostly   around `0xA0DB` / \~219
-                                           \~13 
-
-  2nd gear                        \~16--22 km/h             approximately
-                                                       `0xA0E4`--`0xA162`
-
-  1st-gear speed               increasing speed       up to approximately
-  sweep                                           `0xA2C6` / \~710 offset
-  -----------------------------------------------------------------------
+| Test | Approx. speed | Typical raw value / offset |
+|---|---:|---:|
+| Rear wheel manually spun | ~3 km/h | `0xA036` / ~54 |
+| Rear wheel manually spun | ~4 km/h | `0xA048` / ~72 |
+| 1st gear | ~12–14 km/h, mostly ~13 | around `0xA0DB` / ~219 |
+| 2nd gear | ~16–22 km/h | approximately `0xA0E4`–`0xA162` |
+| 1st-gear speed sweep | increasing speed | up to approximately `0xA2C6` / ~710 offset |
 
 The low-speed tests initially suggested:
 
-``` text
+```text
 D4 / 18
 ```
 
@@ -188,12 +166,11 @@ represented the speed.
 
 ## Independent RPM + gearing validation
 
-The strongest validation used the already-confirmed RPM and gear
-signals.
+The strongest validation used the already-confirmed RPM and gear signals.
 
 Theoretical rear-wheel speed can be calculated from:
 
-``` text
+```text
 wheel_speed =
     RPM
     / (primary_ratio × gear_ratio × final_ratio)
@@ -206,19 +183,19 @@ For the nominal 180/55 ZR17 rear tyre, circumference is approximately
 
 The 1st-gear speed-sweep capture showed approximately:
 
-``` text
+```text
 correlation R ≈ 0.994
 ```
 
 between theoretical rear-wheel speed and:
 
-``` text
+```text
 0x018 D3:D4 - 0xA000
 ```
 
 Candidate scaling was also compared:
 
-``` text
+```text
 offset / 16 → best fit
 offset / 17 → significantly worse
 offset / 18 → significantly worse
@@ -226,7 +203,7 @@ offset / 18 → significantly worse
 
 This strongly supports:
 
-``` text
+```text
 wheel_speed_kmh = (raw - 0xA000) / 16
 ```
 
@@ -245,15 +222,69 @@ validated for the planned telemetry logger.
 
 ------------------------------------------------------------------------
 
-# Throttle Position --- `0x080 D3`
+# Throttle Position — `0x024 D1`
 
-D3 is not a simple absolute 0--255 percentage.
+The throttle position is broadcast as an **absolute position value** in
+byte D1 of CAN ID `0x024`.
 
-It behaves as an incremental/wrapping encoder.
+This is the preferred throttle signal for telemetry decoding.
 
 ## Decoder
 
-``` text
+```text
+raw = D1
+
+throttle_percent = raw / 2.0
+```
+
+The calibrated range is:
+
+```text
+0x00 = 0%
+0xC8 = 100%
+```
+
+Therefore:
+
+```text
+throttle_percent = D1 / 2.0
+```
+
+The reported value should be clamped to 0–100%.
+
+## Calibration
+
+Observed calibration points:
+
+```text
+0x00 =   0%
+0x32 =  25%
+0x64 =  50%
+0x96 =  75%
+0xC8 = 100%
+```
+
+Intermediate values are approximately linear with a resolution of:
+
+```text
+1 count = 0.5%
+```
+
+The signal was validated using live captures while manually varying the
+throttle from closed to full opening and back to closed.
+
+The signal follows the physical throttle position directly and does
+**not** require an accumulator, previous-value tracking, or wraparound
+handling.
+
+## Important: `0x080 D3` is not the preferred throttle signal
+
+An earlier investigation identified `0x080 D3` as an incremental/wrapping
+encoder.
+
+That signal behaves as follows:
+
+```text
 delta = raw - lastRaw
 
 if delta > 127:
@@ -263,32 +294,41 @@ if delta < -127:
     delta += 256
 
 accum += delta
-
-pct = clamp((accum - 188) / 610 * 100, 0, 100)
 ```
 
-Calibration obtained from repeated tests:
+with the previously observed calibration:
 
-``` text
+```text
 closed/rest ≈ 188 (0xBC)
 full travel ≈ 610 counts
 ```
 
-The reported value should always be clamped to 0--100%.
+However, for the current telemetry implementation, `0x024 D1` is the
+preferred throttle signal because it provides a direct absolute throttle
+position.
+
+The current confirmed decoder is therefore:
+
+```text
+CAN ID: 0x024
+Byte:   D1
+Range:  0x00–0xC8
+Output: 0–100%
+```
 
 ------------------------------------------------------------------------
 
-# Front Brake Lever --- `0x022 D6`
+# Front Brake Lever — `0x022 D6`
 
 Current calibrated decoder:
 
-``` text
+```text
 pct = clamp((D6 - 3) / 248 * 100, 0, 100)
 ```
 
 Observed calibration points:
 
-``` text
+```text
 0x03 = 0% / lever released
 0x83 ≈ 50%
 0xFB = 100% / maximum squeeze
@@ -296,11 +336,11 @@ Observed calibration points:
 
 ------------------------------------------------------------------------
 
-# Starter / Kill Switch --- `0x080 D6`
+# Starter / Kill Switch — `0x080 D6`
 
 Confirmed states:
 
-``` text
+```text
 0x00 = killed / kill switch off
 0x20 = run / ready
 0x60 = starting / cranking
@@ -311,11 +351,11 @@ only on RPM reaching zero.
 
 ------------------------------------------------------------------------
 
-# Engine Temperature --- `0x180 D6`
+# Engine Temperature — `0x180 D6`
 
 Decoder:
 
-``` text
+```text
 temperature_C = D6 - 40
 ```
 
@@ -323,11 +363,11 @@ Validated during engine warm-up and temperature changes.
 
 ------------------------------------------------------------------------
 
-# Ambient Temperature --- `0x300 D1`
+# Ambient Temperature — `0x300 D1`
 
 Decoder:
 
-``` text
+```text
 temperature_C = D1 - 40
 ```
 
@@ -335,11 +375,11 @@ Validated against the dashboard/environmental temperature.
 
 ------------------------------------------------------------------------
 
-# Side Stand --- `0x024 D6`
+# Side Stand — `0x024 D6`
 
 Current mapping:
 
-``` text
+```text
 0x00 = side stand down
 0x20 = side stand up
 ```
@@ -356,8 +396,8 @@ Observed frames are 8 bytes long.
 
 A 2-byte trailer is present on observed messages:
 
--   second-to-last byte: rolling counter, typically `0x00`--`0x0F`
--   last byte: checksum/CRC
+- second-to-last byte: rolling counter, typically `0x00`–`0x0F`
+- last byte: checksum/CRC
 
 The exact CRC algorithm has not yet been fully documented.
 
@@ -377,7 +417,7 @@ failed at higher speeds because D3 participates in the value.
 
 The correct signal is:
 
-``` text
+```text
 0x018 D3:D4
 ```
 
@@ -385,7 +425,7 @@ The correct signal is:
 
 An early hypothesis was:
 
-``` text
+```text
 count rising edges above threshold
 frequency × 0.75 = km/h
 ```
@@ -412,7 +452,28 @@ Rejected.
 
 Rejected after real throttle-blip tests.
 
-The useful throttle signal is D3.
+The previously investigated throttle signal was `0x080 D3`, not D5.
+
+## `0x080 D3` as preferred absolute throttle position
+
+The `0x080 D3` signal behaves as an incremental/wrapping encoder and can
+be used to reconstruct throttle movement.
+
+However, it is not the preferred absolute throttle-position signal for
+the current telemetry decoder.
+
+The confirmed absolute throttle signal is:
+
+```text
+0x024 D1
+```
+
+with:
+
+```text
+0x00 = 0%
+0xC8 = 100%
+```
 
 ## `0x210` as RPM
 
@@ -462,7 +523,7 @@ signal has been reliably identified.
 The currently usable signals for the planned ESP32 → Bluetooth → Android
 → CSV → GoPro Telemetry Overlay pipeline are:
 
-``` text
+```text
 RPM:
     CAN ID 0x024
     raw = (D3 << 8) | D4
@@ -472,16 +533,16 @@ Gear:
     CAN ID 0x024
     gear = D5 / 32
 
+Throttle:
+    CAN ID 0x024
+    raw = D1
+    throttle_percent = D1 / 2.0
+    clamp to 0..100%
+
 Wheel speed:
     CAN ID 0x018
     raw = (D3 << 8) | D4
     speed_kmh = (raw - 0xA000) / 16.0
-
-Throttle:
-    CAN ID 0x080
-    incremental encoder on D3
-    unwrap + accumulate
-    pct = clamp((accum - 188) / 610 * 100, 0, 100)
 
 Front brake:
     CAN ID 0x022
@@ -507,23 +568,23 @@ Engine state:
 
 # Confidence Summary
 
-``` text
+```text
 RPM                  CONFIRMED
 Gear                 CONFIRMED
 Wheel speed           CONFIRMED
-Throttle             CONFIRMED / calibrated
-Front brake          CONFIRMED / calibrated
-Engine temperature   CONFIRMED
-Ambient temperature  CONFIRMED
-Kill/start state     CONFIRMED
-Side stand           CONFIRMED, repeat test recommended
+Throttle              CONFIRMED / calibrated
+Front brake           CONFIRMED / calibrated
+Engine temperature    CONFIRMED
+Ambient temperature   CONFIRMED
+Kill/start state      CONFIRMED
+Side stand            CONFIRMED, repeat test recommended
 
-Clutch switch        UNSOLVED
-Rear brake switch    UNSOLVED
-Battery voltage      UNSOLVED
-Odometer             UNSOLVED
-Trip computer        UNSOLVED
-CRC algorithm        UNSOLVED
+Clutch switch         UNSOLVED
+Rear brake switch     UNSOLVED
+Battery voltage       UNSOLVED
+Odometer              UNSOLVED
+Trip computer         UNSOLVED
+CRC algorithm         UNSOLVED
 ```
 
 ------------------------------------------------------------------------
@@ -532,7 +593,7 @@ CRC algorithm        UNSOLVED
 
 The planned architecture is:
 
-``` text
+```text
 Ducati CAN bus
       ↓
 ESP32 + CAN transceiver
