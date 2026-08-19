@@ -100,6 +100,9 @@ bytes 4..N   firmware data
 
 The ESP32 requires each offset to equal the number of bytes already received.
 
+CRC32 uses the standard CRC-32/ISO-HDLC value, equivalent to Java's
+`java.util.zip.CRC32`.
+
 ### OTA status
 
 Six bytes:

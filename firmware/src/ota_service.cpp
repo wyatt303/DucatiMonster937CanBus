@@ -21,6 +21,7 @@ static size_t otaExpectedSize = 0;
 static size_t otaReceived = 0;
 static uint32_t otaExpectedCrc = 0;
 static uint32_t otaRunningCrc = 0;
+static size_t otaLastReport = 0;
 
 enum : uint8_t {
     OTA_START  = 0x01,
@@ -65,6 +66,7 @@ static void abortOta(uint32_t errorCode)
     otaReceived = 0;
     otaExpectedCrc = 0;
     otaRunningCrc = 0;
+    otaLastReport = 0;
 
     sendStatus(OTA_ERROR, errorCode);
 }
@@ -135,6 +137,7 @@ class OtaControlCallbacks : public BLECharacteristicCallbacks {
                 otaReceived = 0;
                 otaExpectedCrc = crc;
                 otaRunningCrc = 0;
+                otaLastReport = 0;
 
                 Serial.printf(
                     "OTA started: %u bytes, expected CRC32 0x%08lX\n",
@@ -257,10 +260,9 @@ class OtaDataCallbacks : public BLECharacteristicCallbacks {
         );
 
         // Notify progress approximately every 16 KB and at completion.
-        static size_t lastReport = 0;
         if (otaReceived == otaExpectedSize ||
-            otaReceived - lastReport >= 16384) {
-            lastReport = otaReceived;
+            otaReceived - otaLastReport >= 16384) {
+            otaLastReport = otaReceived;
             sendStatus(OTA_PROGRESS, (uint32_t)otaReceived);
         }
     }
@@ -291,6 +293,13 @@ void otaServiceInit(BLEServer *server)
     otaStatus->addDescriptor(new BLE2902());
 
     service->start();
+}
+
+void otaServiceOnDisconnect()
+{
+    if (otaActive) {
+        abortOta(24);
+    }
 }
 
 bool bleIsOtaActive()

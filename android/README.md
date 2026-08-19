@@ -22,10 +22,10 @@ Native Kotlin Android application for the Ducati Monster 937 CAN/BLE telemetry l
 - BLE sequence/drop detection
 - Start/stop recording
 - CSV export through the Android document picker
+- Firmware update from a PlatformIO `firmware.bin` file over BLE OTA
 
 ## Not yet implemented
 
-- BLE firmware OTA UI
 - Background recording service
 - GPS
 - GoPro telemetry export

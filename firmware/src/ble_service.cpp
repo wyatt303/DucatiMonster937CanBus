@@ -22,6 +22,7 @@ class ServerCallbacks : public BLEServerCallbacks {
     void onDisconnect(BLEServer *s) override
     {
         connected = false;
+        otaServiceOnDisconnect();
         Serial.println("BLE: Android disconnected");
         delay(100);
         BLEDevice::startAdvertising();

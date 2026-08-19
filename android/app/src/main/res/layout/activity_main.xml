@@ -59,6 +59,14 @@
             android:enabled="false"
             android:text="Export CSV" />
 
+        <Button
+            android:id="@+id/updateFirmwareButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:enabled="false"
+            android:text="Update firmware" />
+
         <TextView
             android:id="@+id/rpmValue"
             android:layout_width="match_parent"

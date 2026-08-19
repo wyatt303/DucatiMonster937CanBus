@@ -18,6 +18,7 @@ class MainActivity : Activity() {
     companion object {
         private const val REQUEST_BLE = 100
         private const val CREATE_CSV = 200
+        private const val OPEN_FIRMWARE = 300
     }
 
     private lateinit var status: TextView
@@ -33,6 +34,7 @@ class MainActivity : Activity() {
     private lateinit var connect: Button
     private lateinit var record: Button
     private lateinit var export: Button
+    private lateinit var updateFirmware: Button
 
     private lateinit var ble: DucatiBleClient
     private val recorder = CsvRecorder()
@@ -60,6 +62,7 @@ class MainActivity : Activity() {
         connect = findViewById(R.id.connectButton)
         record = findViewById(R.id.recordButton)
         export = findViewById(R.id.exportButton)
+        updateFirmware = findViewById(R.id.updateFirmwareButton)
 
         ble = DucatiBleClient(
             this,
@@ -69,11 +72,25 @@ class MainActivity : Activity() {
                     status.text = message
                     connect.text = if (isConnected) "Disconnect" else "Connect"
                     record.isEnabled = isConnected
+                    updateFirmware.isEnabled = isConnected
                 }
             },
             onTelemetry = { telemetry ->
                 runOnUiThread {
                     showTelemetry(telemetry)
+                }
+            },
+            onOtaProgress = { sent, total ->
+                runOnUiThread {
+                    updateFirmware.isEnabled = false
+                    status.text = "Updating firmware: $sent / $total bytes"
+                }
+            },
+            onOtaFinished = { message ->
+                runOnUiThread {
+                    updateFirmware.isEnabled = connected
+                    status.text = message
+                    Toast.makeText(this, message, Toast.LENGTH_LONG).show()
                 }
             }
         )
@@ -103,6 +120,10 @@ class MainActivity : Activity() {
 
         export.setOnClickListener {
             exportCsv()
+        }
+
+        updateFirmware.setOnClickListener {
+            selectFirmware()
         }
 
         if (!hasBlePermissions()) {
@@ -201,6 +222,35 @@ class MainActivity : Activity() {
         startActivityForResult(intent, CREATE_CSV)
     }
 
+    private fun selectFirmware() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            type = "application/octet-stream"
+            addCategory(Intent.CATEGORY_OPENABLE)
+        }
+        startActivityForResult(intent, OPEN_FIRMWARE)
+    }
+
+    private fun startFirmwareUpdate(uri: Uri) {
+        try {
+            val firmware = contentResolver.openInputStream(uri)?.use {
+                it.readBytes()
+            } ?: throw IllegalStateException("Cannot read firmware file")
+
+            if (firmware.isEmpty()) {
+                throw IllegalArgumentException("Firmware file is empty")
+            }
+
+            updateFirmware.isEnabled = false
+            ble.startOta(firmware)
+        } catch (e: Exception) {
+            Toast.makeText(
+                this,
+                "Cannot open firmware: ${e.message}",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
     @Deprecated("Activity Result API can be introduced later.")
     override fun onActivityResult(
         requestCode: Int,
@@ -209,26 +259,31 @@ class MainActivity : Activity() {
     ) {
         super.onActivityResult(requestCode, resultCode, data)
 
-        if (requestCode == CREATE_CSV && resultCode == RESULT_OK) {
-            val uri: Uri = data?.data ?: return
+        if (resultCode != RESULT_OK) return
 
-            try {
-                contentResolver.openOutputStream(uri)?.use { output ->
-                    recorder.writeTo(output)
+        val uri: Uri = data?.data ?: return
+        when (requestCode) {
+            CREATE_CSV -> {
+                try {
+                    contentResolver.openOutputStream(uri)?.use { output ->
+                        recorder.writeTo(output)
+                    }
+
+                    Toast.makeText(
+                        this,
+                        "CSV exported",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                } catch (e: Exception) {
+                    Toast.makeText(
+                        this,
+                        "CSV export failed: ${e.message}",
+                        Toast.LENGTH_LONG
+                    ).show()
                 }
-
-                Toast.makeText(
-                    this,
-                    "CSV exported",
-                    Toast.LENGTH_SHORT
-                ).show()
-            } catch (e: Exception) {
-                Toast.makeText(
-                    this,
-                    "CSV export failed: ${e.message}",
-                    Toast.LENGTH_LONG
-                ).show()
             }
+
+            OPEN_FIRMWARE -> startFirmwareUpdate(uri)
         }
     }
 

@@ -67,9 +67,9 @@ pio device monitor
 
 Open the `android/` directory in Android Studio.
 
-The Android project currently contains the BLE scanner/connection layer and
-19-byte telemetry decoder. OTA and CSV recording will be added on top of the
-same protocol.
+The Android project includes BLE telemetry, CSV recording/export, and firmware
+updates over the OTA service. Build the ESP32 application with PlatformIO and
+select its generated `firmware.bin` from the connected Android app.
 
 ## Protocol
 
