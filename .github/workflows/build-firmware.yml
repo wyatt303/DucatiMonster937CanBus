@@ -1,0 +1,34 @@
+name: Build ESP32 Firmware
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: [self-hosted, linux, x64]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build firmware with PlatformIO
+        run: |
+          podman run --rm \
+            -v "$PWD:/workspace:Z" \
+            -w /workspace \
+            docker.io/platformio/platformio-core:latest \
+            pio run
+
+      - name: Find firmware
+        run: |
+          find .pio -type f -name "firmware.bin" -print
+
+      - name: Show firmware size
+        run: |
+          find .pio -type f -name "firmware.bin" -exec ls -lh {} \;
