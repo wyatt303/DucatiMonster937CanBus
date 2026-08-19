@@ -4,9 +4,11 @@ on:
   push:
     branches:
       - main
+
   pull_request:
     branches:
       - main
+
   workflow_dispatch:
 
 jobs:
@@ -17,18 +19,30 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Build firmware with PlatformIO
+      - name: Build PlatformIO container
+        run: |
+          podman build \
+            -f firmware/Dockerfile.platformio \
+            -t ducati-platformio:latest \
+            firmware/
+
+      - name: Create PlatformIO cache volume
+        run: |
+          podman volume inspect platformio-data >/dev/null 2>&1 || \
+          podman volume create platformio-data
+
+      - name: Build firmware
         run: |
           podman run --rm \
             -v "$PWD:/workspace:Z" \
-            -w /workspace \
-            docker.io/platformio/platformio-core:latest \
-            pio run
+            -v platformio-data:/root/.platformio:Z \
+            -w /workspace/firmware \
+            ducati-platformio:latest \
+            run
 
-      - name: Find firmware
+      - name: Show firmware
         run: |
-          find .pio -type f -name "firmware.bin" -print
-
-      - name: Show firmware size
-        run: |
-          find .pio -type f -name "firmware.bin" -exec ls -lh {} \;
+          find firmware/.pio \
+            -type f \
+            -name "firmware.bin" \
+            -exec ls -lh {} \;
