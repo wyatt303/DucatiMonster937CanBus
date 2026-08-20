@@ -10,13 +10,6 @@ on:
       - "android/**"
       - ".github/workflows/build-android.yml"
 
-  pull_request:
-    branches:
-      - main
-    paths:
-      - "android/**"
-      - ".github/workflows/build-android.yml"
-
   workflow_dispatch:
 
 permissions:
