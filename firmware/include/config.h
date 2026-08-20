@@ -1,7 +1,7 @@
 #pragma once
 
 // Firmware / protocol version
-#define DUCATI_FW_VERSION "0.1.0"
+#define DUCATI_FW_VERSION "0.0.1"
 #define DUCATI_PROTOCOL_VERSION 1
 #ifndef DUCATI_GIT_SHA
 #define DUCATI_GIT_SHA "unknown"
