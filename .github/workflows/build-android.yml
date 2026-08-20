@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - main
+    tags:
+      - "android-v*"
     paths:
       - "android/**"
       - ".github/workflows/build-android.yml"
@@ -16,6 +18,9 @@ on:
       - ".github/workflows/build-android.yml"
 
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -37,6 +42,21 @@ jobs:
           podman volume inspect gradle-cache >/dev/null 2>&1 || \
           podman volume create gradle-cache
 
+      - name: Verify Android version matches tag
+        if: startsWith(github.ref, 'refs/tags/android-v')
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#android-v}"
+          APP_VERSION="$(grep 'versionName' android/app/build.gradle.kts \
+            | sed -E 's/.*"([^"]+)".*/\1/')"
+
+          echo "Tag version: $TAG_VERSION"
+          echo "App version: $APP_VERSION"
+
+          if [ "$TAG_VERSION" != "$APP_VERSION" ]; then
+            echo "ERROR: Android version does not match Git tag"
+            exit 1
+          fi
+
       - name: Build debug APK
         run: |
           podman run --rm \
@@ -49,3 +69,26 @@ jobs:
       - name: Show APK
         run: |
           ls -lh android/app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Prepare Android release
+        if: startsWith(github.ref, 'refs/tags/android-v')
+        run: |
+          VERSION="${GITHUB_REF_NAME#android-v}"
+
+          mkdir -p release
+          cp android/app/build/outputs/apk/debug/app-debug.apk \
+            "release/ducati-telemetry-${VERSION}.apk"
+
+          sha256sum \
+            "release/ducati-telemetry-${VERSION}.apk" \
+            > "release/ducati-telemetry-${VERSION}.apk.sha256"
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/android-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Android App ${{ github.ref_name }}"
+          generate_release_notes: true
+          files: |
+            release/*.apk
+            release/*.sha256
