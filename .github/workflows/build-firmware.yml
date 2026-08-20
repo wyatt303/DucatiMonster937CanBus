@@ -53,6 +53,21 @@ jobs:
             -name "firmware.bin" \
             -exec ls -lh {} \;
 
+      - name: Verify firmware version matches tag
+        if: startsWith(github.ref, 'refs/tags/fw-v')
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#fw-v}"
+          FW_VERSION="$(grep 'DUCATI_FW_VERSION' firmware/include/config.h \
+            | sed -E 's/.*"([^"]+)".*/\1/')"
+
+          echo "Tag version:      $TAG_VERSION"
+          echo "Firmware version: $FW_VERSION"
+
+          if [ "$TAG_VERSION" != "$FW_VERSION" ]; then
+            echo "ERROR: Firmware version does not match Git tag"
+            exit 1
+          fi
+
       - name: Prepare release firmware
         if: startsWith(github.ref, 'refs/tags/fw-v')
         run: |
@@ -72,9 +87,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/fw-v')
         uses: softprops/action-gh-release@v2
         with:
-          name: "Firmware ${{
-            github.ref_name
-          }}"
+          name: "ESP Firmware ${{ github.ref_name }}"
           generate_release_notes: true
           files: |
             release/*.bin
