@@ -5,11 +5,17 @@ on:
     branches:
       - main
 
+    tags:
+      - "fw-v*"
+
   pull_request:
     branches:
       - main
 
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -40,9 +46,36 @@ jobs:
             ducati-platformio:latest \
             run
 
-      - name: Show firmware
+      - name: Find firmware
         run: |
           find firmware/.pio \
             -type f \
             -name "firmware.bin" \
             -exec ls -lh {} \;
+
+      - name: Prepare release firmware
+        if: startsWith(github.ref, 'refs/tags/fw-v')
+        run: |
+          VERSION="${GITHUB_REF_NAME#fw-v}"
+
+          mkdir -p release
+
+          FW_FILE="$(find firmware/.pio -type f -name firmware.bin | head -n 1)"
+
+          cp "$FW_FILE" "release/ducati-firmware-${VERSION}.bin"
+
+          sha256sum \
+            "release/ducati-firmware-${VERSION}.bin" \
+            > "release/ducati-firmware-${VERSION}.bin.sha256"
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/fw-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Firmware ${{
+            github.ref_name
+          }}"
+          generate_release_notes: true
+          files: |
+            release/*.bin
+            release/*.sha256
