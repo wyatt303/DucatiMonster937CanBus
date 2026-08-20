@@ -1,0 +1,35 @@
+FROM docker.io/library/eclipse-temurin:17-jdk-jammy
+
+ENV ANDROID_HOME=/opt/android-sdk
+ENV ANDROID_SDK_ROOT=/opt/android-sdk
+ENV PATH="${PATH}:${ANDROID_HOME}/cmdline-tools/latest/bin:${ANDROID_HOME}/platform-tools"
+
+ARG CMDLINE_TOOLS_VERSION=11076708
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        wget \
+        unzip \
+        ca-certificates \
+        git && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p ${ANDROID_HOME}/cmdline-tools && \
+    wget -q \
+      https://dl.google.com/android/repository/commandlinetools-linux-${CMDLINE_TOOLS_VERSION}_latest.zip \
+      -O /tmp/cmdline-tools.zip && \
+    unzip -q /tmp/cmdline-tools.zip -d /tmp/android-tools && \
+    mkdir -p ${ANDROID_HOME}/cmdline-tools/latest && \
+    mv /tmp/android-tools/cmdline-tools/* \
+       ${ANDROID_HOME}/cmdline-tools/latest/ && \
+    rm -rf /tmp/cmdline-tools.zip /tmp/android-tools
+
+RUN yes | sdkmanager --licenses >/dev/null && \
+    sdkmanager \
+      "platforms;android-35" \
+      "build-tools;35.0.0" \
+      "platform-tools"
+
+WORKDIR /workspace/android
+
+CMD ["./gradlew", "assembleDebug"]
