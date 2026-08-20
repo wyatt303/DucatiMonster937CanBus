@@ -16,6 +16,7 @@ Native Kotlin Android application for the Ducati Monster 937 CAN/BLE telemetry l
 - BLE permissions for Android 12+
 - Scan for `Ducati-Monster-937`
 - BLE connection and service discovery
+- Firmware, protocol, and Git build identification from the device-info characteristic
 - 19-byte binary telemetry decoding
 - Live RPM, gear, speed, throttle, front brake, engine and ambient temperature
 - Android wall-clock timestamp on packet reception

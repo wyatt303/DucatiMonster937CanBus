@@ -30,6 +30,7 @@ class MainActivity : Activity() {
     private lateinit var engine: TextView
     private lateinit var ambient: TextView
     private lateinit var packets: TextView
+    private lateinit var deviceInfo: TextView
 
     private lateinit var connect: Button
     private lateinit var record: Button
@@ -58,6 +59,7 @@ class MainActivity : Activity() {
         engine = findViewById(R.id.engineTempValue)
         ambient = findViewById(R.id.ambientTempValue)
         packets = findViewById(R.id.packetInfo)
+        deviceInfo = findViewById(R.id.deviceInfo)
 
         connect = findViewById(R.id.connectButton)
         record = findViewById(R.id.recordButton)
@@ -73,6 +75,15 @@ class MainActivity : Activity() {
                     connect.text = if (isConnected) "Disconnect" else "Connect"
                     record.isEnabled = isConnected
                     updateFirmware.isEnabled = isConnected
+                }
+            },
+            onDeviceInfo = { info ->
+                runOnUiThread {
+                    deviceInfo.text = if (info == null) {
+                        "Firmware: Unknown"
+                    } else {
+                        "Firmware: v${info.firmware}\nProtocol: ${info.protocol}\nBuild: ${info.build}"
+                    }
                 }
             },
             onTelemetry = { telemetry ->

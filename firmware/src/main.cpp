@@ -45,6 +45,7 @@ void setup()
     Serial.println("Ducati Monster 937 BLE Telemetry Logger");
     Serial.printf("Firmware: %s\n", DUCATI_FW_VERSION);
     Serial.printf("Protocol: %u\n", DUCATI_PROTOCOL_VERSION);
+    Serial.printf("Build: %s\n", DUCATI_GIT_SHA);
     Serial.println("========================================");
 
     telemetryInit();

@@ -68,6 +68,15 @@
             android:text="Update firmware" />
 
         <TextView
+            android:id="@+id/deviceInfo"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="Firmware: Unknown"
+            android:textColor="@color/text_secondary"
+            android:textSize="16sp" />
+
+        <TextView
             android:id="@+id/rpmValue"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

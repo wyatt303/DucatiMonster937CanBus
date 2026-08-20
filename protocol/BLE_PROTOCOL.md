@@ -25,6 +25,24 @@ Ducati-Monster-937
 | Device info | `7f6d0003-8b7a-4f7b-9d8a-937000000001` | Android READ |
 | Command | `7f6d0004-8b7a-4f7b-9d8a-937000000001` | Android → ESP32 WRITE |
 
+### Device info
+
+The readable device-info characteristic contains UTF-8 text in this format:
+
+```text
+fw=<version>;protocol=<number>;build=<short_git_sha>
+```
+
+Example:
+
+```text
+fw=0.3.0;protocol=1;build=94c120d
+```
+
+`fw` is the semantic firmware version, `protocol` identifies this BLE protocol,
+and `build` is the seven-character Git commit SHA. Builds made without available
+Git metadata use `unknown` for the build value.
+
 ## Telemetry packet
 
 Exactly **19 bytes**, little-endian.

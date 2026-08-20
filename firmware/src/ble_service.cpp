@@ -63,11 +63,12 @@ void bleInit()
     );
 
     String info =
-        String("Ducati Monster 937;FW=") +
+        String("fw=") +
         DUCATI_FW_VERSION +
-        ";PROTO=" +
+        ";protocol=" +
         String(DUCATI_PROTOCOL_VERSION) +
-        ";CAN=500kbps";
+        ";build=" +
+        DUCATI_GIT_SHA;
 
     deviceInfoCharacteristic->setValue(info.c_str());
 

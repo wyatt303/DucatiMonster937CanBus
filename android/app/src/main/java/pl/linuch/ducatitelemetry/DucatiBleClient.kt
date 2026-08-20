@@ -20,9 +20,16 @@ object DucatiBle {
     const val DEVICE_NAME = "Ducati-Monster-937"
 }
 
+data class DeviceInfo(
+    val firmware: String,
+    val protocol: String,
+    val build: String
+)
+
 class DucatiBleClient(
     private val context: Context,
     private val onConnectionChanged: (Boolean, String) -> Unit,
+    private val onDeviceInfo: (DeviceInfo?) -> Unit,
     private val onTelemetry: (Telemetry) -> Unit,
     private val onOtaProgress: (Int, Int) -> Unit,
     private val onOtaFinished: (String) -> Unit
@@ -88,6 +95,7 @@ class DucatiBleClient(
                 }
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 onConnectionChanged(false, "Disconnected")
+                onDeviceInfo(null)
                 g.close()
                 if (gatt == g) gatt = null
                 otaReady = false
@@ -139,6 +147,21 @@ class DucatiBleClient(
             }
 
             writeNextNotificationDescriptor(g)
+        }
+
+        override fun onCharacteristicRead(
+            g: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            status: Int
+        ) {
+            if (characteristic.uuid != DucatiBle.DEVICE_INFO) return
+
+            val info = if (status == BluetoothGatt.GATT_SUCCESS) {
+                parseDeviceInfo(characteristic.value.toString(Charsets.UTF_8))
+            } else {
+                null
+            }
+            onDeviceInfo(info)
         }
 
         @SuppressLint("MissingPermission")
@@ -198,12 +221,29 @@ class DucatiBleClient(
         if (notificationSetup.isEmpty()) {
             otaReady = true
             onConnectionChanged(true, "Connected")
+            val deviceInfo = g.getService(DucatiBle.MAIN_SERVICE)
+                ?.getCharacteristic(DucatiBle.DEVICE_INFO)
+            if (deviceInfo == null || !g.readCharacteristic(deviceInfo)) {
+                onDeviceInfo(null)
+            }
             return
         }
 
         val descriptor = notificationSetup.removeAt(0)
         descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
         g.writeDescriptor(descriptor)
+    }
+
+    private fun parseDeviceInfo(payload: String): DeviceInfo? {
+        val fields = payload.split(';').mapNotNull { entry ->
+            val parts = entry.split('=', limit = 2)
+            if (parts.size == 2) parts[0].trim() to parts[1].trim() else null
+        }.toMap()
+
+        val firmware = fields["fw"]?.takeIf { it.isNotEmpty() } ?: return null
+        val protocol = fields["protocol"]?.takeIf { it.isNotEmpty() } ?: return null
+        val build = fields["build"]?.takeIf { it.isNotEmpty() } ?: return null
+        return DeviceInfo(firmware, protocol, build)
     }
 
     @SuppressLint("MissingPermission")
@@ -369,6 +409,7 @@ class DucatiBleClient(
         gatt = null
         otaReady = false
         finishOta("Firmware update interrupted")
+        onDeviceInfo(null)
         onConnectionChanged(false, "Disconnected")
     }
 }
