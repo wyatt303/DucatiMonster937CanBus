@@ -1,0 +1,51 @@
+name: Build Android App
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "android/**"
+      - ".github/workflows/build-android.yml"
+
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "android/**"
+      - ".github/workflows/build-android.yml"
+
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: [self-hosted, linux, x64]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build Android container
+        run: |
+          podman build \
+            -f android/Dockerfile.android \
+            -t ducati-android:latest \
+            android/
+
+      - name: Create Gradle cache volume
+        run: |
+          podman volume inspect gradle-cache >/dev/null 2>&1 || \
+          podman volume create gradle-cache
+
+      - name: Build debug APK
+        run: |
+          podman run --rm \
+            -v "$PWD:/workspace:Z" \
+            -v gradle-cache:/root/.gradle:Z \
+            -w /workspace/android \
+            ducati-android:latest \
+            ./gradlew assembleDebug
+
+      - name: Show APK
+        run: |
+          ls -lh android/app/build/outputs/apk/debug/app-debug.apk
