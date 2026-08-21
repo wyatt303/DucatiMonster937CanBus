@@ -85,6 +85,7 @@ class RideSessionManagerTest {
         val clock = TestClock()
         manager(root, clock).apply {
             startSession()
+            clock.now = 3_000
             appendTelemetry(telemetry(clock.now))
         }
 
@@ -191,6 +192,79 @@ class RideSessionManagerTest {
     }
 
     @Test
+    fun samplesWithinFlushIntervalRemainBuffered() {
+        val root = temporaryFolder.newFolder()
+        val clock = TestClock(1_000)
+        val manager = manager(root, clock)
+        val session = manager.startSession()
+        manager.appendTelemetry(telemetry(1_000, sequence = 1))
+        clock.now = 2_999
+        manager.appendTelemetry(telemetry(2_999, sequence = 2))
+
+        assertEquals(listOf(TelemetryCsv.HEADER), File(root, session.filePath).readLines())
+    }
+
+    @Test
+    fun reachingFlushIntervalPersistsAllBufferedSamples() {
+        val root = temporaryFolder.newFolder()
+        val clock = TestClock(1_000)
+        val manager = manager(root, clock)
+        val session = manager.startSession()
+        manager.appendTelemetry(telemetry(1_000, sequence = 1))
+        clock.now = 3_000
+        manager.appendTelemetry(telemetry(3_000, sequence = 2))
+
+        val rows = File(root, session.filePath).readLines()
+        assertEquals(3, rows.size)
+        assertTrue(rows[1].startsWith("1000,1,"))
+        assertTrue(rows[2].startsWith("3000,2,"))
+    }
+
+    @Test
+    fun pauseForcesPendingTelemetryToDisk() {
+        val root = temporaryFolder.newFolder()
+        val clock = TestClock(1_000)
+        val manager = manager(root, clock)
+        val session = manager.startSession()
+        manager.appendTelemetry(telemetry(clock.now))
+        clock.now = 1_500
+
+        manager.pauseSession()
+
+        assertEquals(2, File(root, session.filePath).readLines().size)
+    }
+
+    @Test
+    fun stopForcesPendingTelemetryToDisk() {
+        val root = temporaryFolder.newFolder()
+        val clock = TestClock(1_000)
+        val manager = manager(root, clock)
+        val session = manager.startSession()
+        manager.appendTelemetry(telemetry(clock.now))
+        clock.now = 1_500
+
+        manager.stopSession()
+
+        assertEquals(2, File(root, session.filePath).readLines().size)
+    }
+
+    @Test
+    fun periodicFlushPersistsRecoverableMetadata() {
+        val root = temporaryFolder.newFolder()
+        val clock = TestClock(1_000)
+        manager(root, clock).apply {
+            startSession()
+            appendTelemetry(telemetry(clock.now, sequence = 1))
+            clock.now = 3_000
+            appendTelemetry(telemetry(clock.now, sequence = 2))
+        }
+
+        val recovered = manager(root, clock).recoverSessions().single()
+        assertEquals(2, recovered.sampleCount)
+        assertEquals(RideSessionState.RECOVERED, recovered.state)
+    }
+
+    @Test
     fun pausedAndActiveDurationsAreCalculatedSeparately() {
         val clock = TestClock(1_000)
         val manager = manager(temporaryFolder.newFolder(), clock)
@@ -259,6 +333,7 @@ class RideSessionManagerTest {
         completeOne(manager, clock)
         clock.now += 1_000
         manager.startSession()
+        clock.now += 2_000
         manager.appendTelemetry(telemetry(clock.now))
         manager(root, clock) { 2 }.recoverSessions()
 

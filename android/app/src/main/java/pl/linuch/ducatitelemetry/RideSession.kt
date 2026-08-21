@@ -81,8 +81,13 @@ class RideSessionManager(
     private val retentionLimit: () -> Int?,
     private val clock: () -> Long = System::currentTimeMillis
 ) {
+    companion object {
+        private const val FLUSH_INTERVAL_MS = 2_000L
+    }
+
     private var active: RideSession? = null
     private var writer: BufferedWriter? = null
+    private var lastFlushAt = 0L
 
     init {
         if (!root.exists() && !root.mkdirs()) {
@@ -115,6 +120,7 @@ class RideSessionManager(
                 it.append(TelemetryCsv.HEADER).append('\n')
                 it.flush()
             }
+            lastFlushAt = now
             active = session
             writeMetadata(session)
             return session.copy()
@@ -132,6 +138,7 @@ class RideSessionManager(
     fun pauseSession(): RideSession {
         val session = requireState(RideSessionState.RECORDING)
         val now = clock()
+        flushWriter(now)
         session.state = RideSessionState.PAUSED
         session.pausedAt = now
         session.endTime = now
@@ -148,6 +155,7 @@ class RideSessionManager(
         session.state = RideSessionState.RECORDING
         session.endTime = now
         writeMetadata(session)
+        lastFlushAt = now
         return session.copy()
     }
 
@@ -155,13 +163,14 @@ class RideSessionManager(
     fun stopSession(): RideSession? {
         val session = active ?: return null
         val now = clock()
+        flushWriter(now)
+        writer?.close()
+        writer = null
         if (session.state == RideSessionState.PAUSED) {
             session.totalPausedDurationMs += (now - (session.pausedAt ?: now)).coerceAtLeast(0)
             session.pausedAt = null
         }
         session.endTime = now
-        writer?.closeQuietly()
-        writer = null
         active = null
 
         if (session.sampleCount == 0L) {
@@ -183,13 +192,15 @@ class RideSessionManager(
         if (session.state != RideSessionState.RECORDING) return null
 
         return try {
-            writer?.apply {
-                append(TelemetryCsv.row(telemetry)).append('\n')
-                flush()
-            } ?: throw IOException("Ride file is closed")
+            writer?.append(TelemetryCsv.row(telemetry))?.append('\n')
+                ?: throw IOException("Ride file is closed")
             session.sampleCount++
             session.endTime = telemetry.phoneTimestampMs.coerceAtLeast(session.startTime)
-            writeMetadata(session)
+            val now = clock()
+            if (now - lastFlushAt >= FLUSH_INTERVAL_MS) {
+                flushWriter(now)
+                writeMetadata(session)
+            }
             null
         } catch (error: Exception) {
             writer?.closeQuietly()
@@ -205,6 +216,13 @@ class RideSessionManager(
 
     @Synchronized
     fun recoverSessions(): List<RideSession> {
+        active?.let { session ->
+            runCatching {
+                val now = clock()
+                flushWriter(now)
+                writeMetadata(session)
+            }
+        }
         writer?.closeQuietly()
         writer = null
         active = null
@@ -221,6 +239,7 @@ class RideSessionManager(
                     if (!csvFile(session).isFile) throw IOException("Ride CSV is missing")
                     writer = FileOutputStream(csvFile(session), true)
                         .bufferedWriter(StandardCharsets.UTF_8)
+                    lastFlushAt = clock()
                     active = session
                 } catch (_: Exception) {
                     session.state = RideSessionState.RECOVERED
@@ -342,5 +361,9 @@ class RideSessionManager(
 
     private fun metadataFile(id: String) = File(root, "$id.properties")
     private fun csvFile(session: RideSession) = File(root, session.filePath)
+    private fun flushWriter(now: Long) {
+        writer?.flush() ?: throw IOException("Ride file is closed")
+        lastFlushAt = now
+    }
     private fun BufferedWriter.closeQuietly() = runCatching { close() }.getOrNull()
 }

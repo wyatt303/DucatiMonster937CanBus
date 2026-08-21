@@ -4,7 +4,7 @@ Native Kotlin Android application for the Ducati Monster 937 CAN/BLE telemetry l
 
 ## Version
 
-**0.1.0**
+**0.0.2**
 
 - Minimum Android: **12 / API 31**
 - Compile SDK: **35**
@@ -32,8 +32,16 @@ Native Kotlin Android application for the Ducati Monster 937 CAN/BLE telemetry l
 
 Starting a ride immediately creates a CSV file and metadata under the app's
 private `files/ride_sessions` directory. The existing Telemetry Overlay CSV
-header and column order are preserved. Each telemetry row is appended and
-flushed as it arrives, so the complete ride is never held in memory.
+header and column order are preserved. Each telemetry row is appended as it
+arrives, so the complete ride is never held in memory. Buffered CSV data and
+active-session metadata are flushed approximately every two seconds to reduce
+filesystem I/O.
+
+Pause, Stop/Finish Ride, recovery handling, and writer closure force pending
+data to storage immediately. Resume persists the state transition before new
+samples are accepted. A hard process or power failure between periodic flushes
+can lose at most approximately the latest two seconds of telemetry; no
+per-sample `fsync` is performed.
 
 Pause stops file appends only. BLE remains connected and the live dashboard
 continues to update. Resume writes to the same session and CSV file. Session
