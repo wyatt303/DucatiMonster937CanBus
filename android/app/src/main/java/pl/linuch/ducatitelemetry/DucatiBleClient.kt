@@ -4,6 +4,8 @@ import android.annotation.SuppressLint
 import android.bluetooth.*
 import android.bluetooth.le.*
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelUuid
 import java.util.UUID
 import java.util.zip.CRC32
@@ -26,9 +28,65 @@ data class DeviceInfo(
     val build: String
 )
 
+enum class BleConnectionState {
+    DISCONNECTED,
+    CONNECTING,
+    CONNECTED,
+    RECONNECTING
+}
+
+class ReconnectController(
+    private val delaysMs: List<Long> = listOf(0, 2_000, 5_000, 10_000, 15_000, 30_000)
+) {
+    var enabled = false
+        private set
+    var retryScheduled = false
+        private set
+    var attemptInProgress = false
+        private set
+    private var delayIndex = 0
+
+    fun setEnabled(value: Boolean) {
+        enabled = value
+        if (!value) cancel()
+    }
+
+    fun nextRetry(): Long? {
+        if (!enabled || retryScheduled || attemptInProgress) return null
+        retryScheduled = true
+        val delay = delaysMs[delayIndex.coerceAtMost(delaysMs.lastIndex)]
+        if (delayIndex < delaysMs.lastIndex) delayIndex++
+        return delay
+    }
+
+    fun beginAttempt(): Boolean {
+        if (!enabled || !retryScheduled || attemptInProgress) return false
+        retryScheduled = false
+        attemptInProgress = true
+        return true
+    }
+
+    fun attemptFailed(): Long? {
+        attemptInProgress = false
+        return nextRetry()
+    }
+
+    fun connected() {
+        retryScheduled = false
+        attemptInProgress = false
+        delayIndex = 0
+    }
+
+    fun cancel() {
+        retryScheduled = false
+        attemptInProgress = false
+        delayIndex = 0
+    }
+}
+
 class DucatiBleClient(
     private val context: Context,
-    private val onConnectionChanged: (Boolean, String) -> Unit,
+    private val onConnectionChanged: (BleConnectionState, String) -> Unit,
     private val onDeviceInfo: (DeviceInfo?) -> Unit,
     private val onTelemetry: (Telemetry) -> Unit,
     private val onOtaProgress: (Int, Int) -> Unit,
@@ -43,6 +101,9 @@ class DucatiBleClient(
         private const val OTA_PROGRESS = 0x02
         private const val OTA_SUCCESS = 0x03
         private const val OTA_ERROR = 0x04
+        private const val SCAN_TIMEOUT_MS = 8_000L
+        private const val BLE_PREFS = "ducati_ble"
+        private const val DEVICE_ADDRESS_KEY = "device_address"
     }
 
     private val adapter =
@@ -57,18 +118,48 @@ class DucatiBleClient(
     private var notificationSetup = mutableListOf<BluetoothGattDescriptor>()
     private var mtu = 23
     private var otaReady = false
+    private val handler = Handler(Looper.getMainLooper())
+    private val reconnect = ReconnectController()
+    private val preferences = context.getSharedPreferences(BLE_PREFS, Context.MODE_PRIVATE)
+    private var lastDeviceAddress: String? = preferences.getString(DEVICE_ADDRESS_KEY, null)
+    private var scanInProgress = false
+    private var connecting = false
+    private var explicitDisconnect = false
 
     private var otaFirmware: ByteArray? = null
     private var otaOffset = 0
     private var otaAwaitingReady = false
     private var otaSending = false
 
+    private val reconnectAttempt = Runnable {
+        if (reconnect.beginAttempt()) startScanInternal(reconnecting = true)
+    }
+
+    private val scanTimeout = Runnable {
+        stopScan()
+        connecting = false
+        if (reconnect.enabled) {
+            onConnectionChanged(BleConnectionState.RECONNECTING, "Ducati not found; retrying…")
+            scheduleReconnect(reconnect.attemptFailed())
+        } else {
+            onConnectionChanged(BleConnectionState.DISCONNECTED, "Ducati not found")
+        }
+    }
+
     private val scanCallback = object : ScanCallback() {
         @SuppressLint("MissingPermission")
         override fun onScanResult(callbackType: Int, result: ScanResult) {
-            if (result.device.name == DucatiBle.DEVICE_NAME) {
-                scanner?.stopScan(this)
-                onConnectionChanged(false, "Ducati found, connecting…")
+            val expectedAddress = lastDeviceAddress
+            if ((expectedAddress != null && result.device.address == expectedAddress) ||
+                (expectedAddress == null && result.device.name == DucatiBle.DEVICE_NAME)) {
+                stopScan()
+                lastDeviceAddress = result.device.address
+                preferences.edit().putString(DEVICE_ADDRESS_KEY, result.device.address).apply()
+                connecting = true
+                onConnectionChanged(
+                    if (reconnect.enabled) BleConnectionState.RECONNECTING else BleConnectionState.CONNECTING,
+                    "Ducati found, connecting…"
+                )
                 gatt = result.device.connectGatt(
                     context, false, gattCallback, BluetoothDevice.TRANSPORT_LE
                 )
@@ -76,7 +167,14 @@ class DucatiBleClient(
         }
 
         override fun onScanFailed(errorCode: Int) {
-            onConnectionChanged(false, "BLE scan failed: $errorCode")
+            stopScan()
+            connecting = false
+            if (reconnect.enabled) {
+                onConnectionChanged(BleConnectionState.RECONNECTING, "BLE scan failed: $errorCode; retrying…")
+                scheduleReconnect(reconnect.attemptFailed())
+            } else {
+                onConnectionChanged(BleConnectionState.DISCONNECTED, "BLE scan failed: $errorCode")
+            }
         }
     }
 
@@ -88,28 +186,23 @@ class DucatiBleClient(
             if (status == BluetoothGatt.GATT_SUCCESS &&
                 newState == BluetoothProfile.STATE_CONNECTED) {
                 gatt = g
+                connecting = false
                 otaReady = false
-                onConnectionChanged(true, "Connected")
+                onConnectionChanged(BleConnectionState.CONNECTING, "Connected, setting up…")
                 if (!g.requestMtu(247)) {
                     g.discoverServices()
                 }
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                onConnectionChanged(false, "Disconnected")
-                onDeviceInfo(null)
-                g.close()
-                if (gatt == g) gatt = null
-                otaReady = false
-                finishOta("Firmware update interrupted")
+                handleConnectionFailure(g, "Bike disconnected")
             } else if (status != BluetoothGatt.GATT_SUCCESS) {
-                onConnectionChanged(false, "GATT error: $status")
-                g.close()
+                handleConnectionFailure(g, "GATT error: $status")
             }
         }
 
         @SuppressLint("MissingPermission")
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
             if (status != BluetoothGatt.GATT_SUCCESS) {
-                onConnectionChanged(false, "Service discovery failed: $status")
+                handleConnectionFailure(g, "Service discovery failed: $status")
                 return
             }
 
@@ -117,7 +210,7 @@ class DucatiBleClient(
                 ?.getCharacteristic(DucatiBle.TELEMETRY)
 
             if (telemetry == null) {
-                onConnectionChanged(false, "Telemetry characteristic not found")
+                handleConnectionFailure(g, "Telemetry characteristic not found")
                 return
             }
 
@@ -128,7 +221,7 @@ class DucatiBleClient(
 
             if (otaControlCharacteristic == null || otaDataCharacteristic == null ||
                 otaStatusCharacteristic == null) {
-                onConnectionChanged(false, "OTA service not found")
+                handleConnectionFailure(g, "OTA service not found")
                 return
             }
 
@@ -142,7 +235,7 @@ class DucatiBleClient(
             }.toMutableList()
 
             if (notificationSetup.size != 2) {
-                onConnectionChanged(false, "Cannot enable notifications")
+                handleConnectionFailure(g, "Cannot enable notifications")
                 return
             }
 
@@ -171,7 +264,7 @@ class DucatiBleClient(
             status: Int
         ) {
             if (status != BluetoothGatt.GATT_SUCCESS) {
-                onConnectionChanged(false, "Notification setup failed: $status")
+                handleConnectionFailure(g, "Notification setup failed: $status")
                 return
             }
 
@@ -220,7 +313,9 @@ class DucatiBleClient(
     private fun writeNextNotificationDescriptor(g: BluetoothGatt) {
         if (notificationSetup.isEmpty()) {
             otaReady = true
-            onConnectionChanged(true, "Connected")
+            explicitDisconnect = false
+            reconnect.connected()
+            onConnectionChanged(BleConnectionState.CONNECTED, "Connected")
             val deviceInfo = g.getService(DucatiBle.MAIN_SERVICE)
                 ?.getCharacteristic(DucatiBle.DEVICE_INFO)
             if (deviceInfo == null || !g.readCharacteristic(deviceInfo)) {
@@ -247,34 +342,115 @@ class DucatiBleClient(
     }
 
     @SuppressLint("MissingPermission")
+    private fun handleConnectionFailure(failedGatt: BluetoothGatt, message: String) {
+        stopScan()
+        connecting = false
+        failedGatt.close()
+        if (gatt == failedGatt) gatt = null
+        telemetryCharacteristic = null
+        otaControlCharacteristic = null
+        otaDataCharacteristic = null
+        otaStatusCharacteristic = null
+        otaReady = false
+        onDeviceInfo(null)
+        finishOta("Firmware update interrupted")
+
+        if (!explicitDisconnect && reconnect.enabled) {
+            onConnectionChanged(BleConnectionState.RECONNECTING, "$message; reconnecting…")
+            scheduleReconnect(reconnect.attemptFailed())
+        } else {
+            onConnectionChanged(BleConnectionState.DISCONNECTED, message)
+        }
+    }
+
+    private fun scheduleReconnect(delayMs: Long?) {
+        if (delayMs == null || explicitDisconnect) return
+        handler.removeCallbacks(reconnectAttempt)
+        handler.postDelayed(reconnectAttempt, delayMs)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun stopScan() {
+        handler.removeCallbacks(scanTimeout)
+        if (scanInProgress) scanner?.stopScan(scanCallback)
+        scanInProgress = false
+    }
+
+    @SuppressLint("MissingPermission")
     fun startScan() {
+        explicitDisconnect = false
+        reconnect.cancel()
+        startScanInternal(reconnecting = false)
+    }
+
+    @SuppressLint("MissingPermission")
+    fun setAutoReconnectEnabled(enabled: Boolean) {
+        val wasRetrying = reconnect.retryScheduled || reconnect.attemptInProgress ||
+            scanInProgress || connecting
+        reconnect.setEnabled(enabled)
+        if (!enabled) {
+            handler.removeCallbacks(reconnectAttempt)
+            stopScan()
+            if (connecting) {
+                explicitDisconnect = true
+                gatt?.disconnect()
+                gatt?.close()
+                gatt = null
+                connecting = false
+            }
+            if (wasRetrying && !otaReady) {
+                onConnectionChanged(BleConnectionState.DISCONNECTED, "Reconnect cancelled")
+            }
+        }
+    }
+
+    fun reconnectForActiveRide() {
+        explicitDisconnect = false
+        reconnect.setEnabled(true)
+        if (gatt == null && !scanInProgress && !connecting) {
+            scheduleReconnect(reconnect.nextRetry())
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startScanInternal(reconnecting: Boolean) {
+        if (scanInProgress || connecting || gatt != null) return
         if (adapter == null) {
-            onConnectionChanged(false, "Bluetooth unavailable")
+            onConnectionChanged(BleConnectionState.DISCONNECTED, "Bluetooth unavailable")
+            if (reconnecting) scheduleReconnect(reconnect.attemptFailed())
             return
         }
 
         if (!adapter.isEnabled) {
-            onConnectionChanged(false, "Bluetooth is disabled")
+            onConnectionChanged(BleConnectionState.DISCONNECTED, "Bluetooth is disabled")
+            if (reconnecting) scheduleReconnect(reconnect.attemptFailed())
             return
         }
 
         scanner = adapter.bluetoothLeScanner
         if (scanner == null) {
-            onConnectionChanged(false, "BLE scanner unavailable")
+            onConnectionChanged(BleConnectionState.DISCONNECTED, "BLE scanner unavailable")
+            if (reconnecting) scheduleReconnect(reconnect.attemptFailed())
             return
         }
 
-        onConnectionChanged(false, "Scanning…")
+        onConnectionChanged(
+            if (reconnecting) BleConnectionState.RECONNECTING else BleConnectionState.CONNECTING,
+            if (reconnecting) "Waiting for Ducati…" else "Scanning…"
+        )
 
-        val filter = ScanFilter.Builder()
-            .setServiceUuid(ParcelUuid(DucatiBle.MAIN_SERVICE))
-            .build()
+        val filter = ScanFilter.Builder().apply {
+            lastDeviceAddress?.let(::setDeviceAddress)
+                ?: setServiceUuid(ParcelUuid(DucatiBle.MAIN_SERVICE))
+        }.build()
 
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .build()
 
+        scanInProgress = true
         scanner?.startScan(listOf(filter), settings, scanCallback)
+        handler.postDelayed(scanTimeout, SCAN_TIMEOUT_MS)
     }
 
     @SuppressLint("MissingPermission")
@@ -402,14 +578,20 @@ class DucatiBleClient(
 
     @SuppressLint("MissingPermission")
     fun disconnect() {
-        scanner?.stopScan(scanCallback)
+        explicitDisconnect = true
+        reconnect.setEnabled(false)
+        handler.removeCallbacks(reconnectAttempt)
+        stopScan()
         scanner = null
-        gatt?.disconnect()
-        gatt?.close()
+        connecting = false
+        gatt?.let {
+            it.disconnect()
+            it.close()
+        }
         gatt = null
         otaReady = false
         finishOta("Firmware update interrupted")
         onDeviceInfo(null)
-        onConnectionChanged(false, "Disconnected")
+        onConnectionChanged(BleConnectionState.DISCONNECTED, "Disconnected")
     }
 }

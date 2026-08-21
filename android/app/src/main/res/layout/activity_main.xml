@@ -48,16 +48,25 @@
                 android:layout_marginStart="8dp"
                 android:layout_weight="1"
                 android:enabled="false"
-                android:text="Start recording" />
+                android:text="Start" />
         </LinearLayout>
 
         <Button
-            android:id="@+id/exportButton"
+            android:id="@+id/stopRecordingButton"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
-            android:enabled="false"
-            android:text="Export CSV" />
+            android:text="Stop"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/sessionStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="Recording: Idle"
+            android:textColor="@color/text_secondary"
+            android:textSize="14sp" />
 
         <Button
             android:id="@+id/updateFirmwareButton"
@@ -168,5 +177,43 @@ N"
             android:text="Packets: 0   Dropped: 0"
             android:textColor="@color/text_secondary"
             android:textSize="14sp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="28dp"
+            android:text="Saved rides"
+            android:textColor="@color/text_primary"
+            android:textSize="22sp"
+            android:textStyle="bold" />
+
+        <LinearLayout
+            android:id="@+id/savedRidesContainer"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:orientation="vertical" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="Recording"
+            android:textColor="@color/text_primary"
+            android:textSize="20sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="Retain last sessions"
+            android:textColor="@color/text_secondary"
+            android:textSize="16sp" />
+
+        <Spinner
+            android:id="@+id/retentionSpinner"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
     </LinearLayout>
 </ScrollView>
