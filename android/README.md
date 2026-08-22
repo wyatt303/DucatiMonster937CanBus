@@ -4,7 +4,7 @@ Native Kotlin Android application for the Ducati Monster 937 CAN/BLE telemetry l
 
 ## Version
 
-**0.0.3**
+**0.0.4**
 
 - Minimum Android: **12 / API 31**
 - Compile SDK: **35**
@@ -21,6 +21,7 @@ Native Kotlin Android application for the Ducati Monster 937 CAN/BLE telemetry l
 - Live RPM, gear, speed, throttle, front brake, engine and ambient temperature
 - Android wall-clock and monotonic timestamps on packet reception
 - Optional GNSS recording and calibrated phone-mounted lean angle/roll rate
+- Foreground ride-recording service with persistent notification controls
 - BLE sequence/drop detection
 - Persistent ride sessions written incrementally to app-private storage
 - Start, Pause, Resume, and Stop recording without interrupting live telemetry
@@ -58,6 +59,34 @@ valid persisted data as Recovered and makes it available for export. A ride
 that the user deliberately Paused remains Paused across application restarts
 and can be resumed later. Malformed metadata for one ride is ignored without
 preventing other rides from loading.
+
+## Foreground recording
+
+Starting a ride promotes `RideRecordingService` to an Android foreground
+service. The service, rather than `MainActivity`, owns the active
+`RideSessionManager`, BLE client and reconnect state, GNSS and IMU providers,
+telemetry/drop counters, and periodic CSV persistence. Recording therefore
+continues after pressing Home, opening another app, rotating the display, or
+turning the screen off. Closing and reopening the Activity binds the UI to the
+existing service and does not create another Ride Session.
+
+The low-importance **Ride recording** notification shows Recording/Paused,
+BLE state, GPS state, and ride duration. Its Pause/Resume and Stop actions work
+without opening the Activity. The service remains foreground while either
+Recording or Paused, including during ignition-off BLE reconnect attempts, and
+stops only after Finish/Stop completes the ride.
+
+The service declares Android's `connectedDevice` and `location` foreground
+service types. Location is included dynamically only when fine-location
+permission is available. Android 13+ notification permission is requested, but
+denial does not disable ride storage; system UI may limit notification
+visibility. No wake lock is acquired.
+
+`START_NOT_STICKY` is intentional. Android does not blindly restart a killed
+service and risk reopening or duplicating a recording. On the next app launch,
+the existing persistent recovery rules mark an interrupted Recording ride as
+Recovered. A deliberately Paused ride remains resumable and is restored into
+the foreground service when the app is opened.
 
 ## Ignition-off and BLE reconnect
 
@@ -126,11 +155,33 @@ accuracy. These can support a future GPX exporter; GPX is not implemented.
 
 ## Not yet implemented
 
-- Background recording service
 - GPX export
 - Advanced dashboard
 
 The storage/export separation is intended to support a future GPX exporter.
+
+## Foreground-service manual tests
+
+Perform these checks on a real phone, preferably with battery optimization both
+enabled and disabled for comparison:
+
+1. Start a ride with BLE and GPS active, turn the screen off for several
+   minutes, then confirm CSV samples continued.
+2. Start a ride, press Home, use another application, return, and confirm the
+   same ride and counters remain active.
+3. Start, Pause, turn ignition off and on, wait for automatic reconnect, Resume,
+   Stop, and confirm there is one session.
+4. Remove BLE unexpectedly while Recording, restore it, and confirm samples
+   continue in the same CSV after the timestamp gap.
+5. With the Activity closed or backgrounded, exercise Pause, Resume, and Stop
+   from the notification.
+
+OEM battery managers can impose restrictions beyond standard Android foreground
+service guarantees. GNSS and BLE should remain active through the service, but
+non-wakeup IMU sensors may be suspended during deep device sleep on some phones.
+The app does not fabricate lean samples and writes empty IMU fields when the
+latest sample is stale. For heavily customized Android builds, exclude the app
+from vendor battery optimization if real-device testing shows interruptions.
 
 ## Build
 

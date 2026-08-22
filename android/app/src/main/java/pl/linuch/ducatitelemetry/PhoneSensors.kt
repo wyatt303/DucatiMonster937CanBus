@@ -2,7 +2,6 @@ package pl.linuch.ducatitelemetry
 
 import android.Manifest
 import android.annotation.SuppressLint
-import android.app.Activity
 import android.content.Context
 import android.content.pm.PackageManager
 import android.hardware.Sensor
@@ -14,6 +13,8 @@ import android.location.LocationListener
 import android.location.LocationManager
 import android.os.Bundle
 import android.os.SystemClock
+import android.hardware.display.DisplayManager
+import android.view.Display
 import android.view.Surface
 import kotlin.math.atan2
 import kotlin.math.sqrt
@@ -115,7 +116,7 @@ class PreferenceLeanCalibrationStore(context: Context) : LeanCalibrationStore {
 enum class GnssStatus { AVAILABLE, WAITING_FOR_FIX, ACTIVE, PERMISSION_DENIED, DISABLED }
 
 class PhoneSensorManager(
-    private val activity: Activity,
+    private val context: Context,
     private val calibrationStore: LeanCalibrationStore,
     private val onChanged: (PhoneSensorSnapshot, GnssStatus) -> Unit
 ) : SensorEventListener, LocationListener {
@@ -124,8 +125,9 @@ class PhoneSensorManager(
         const val IMU_FRESH_NANOS = 500_000_000L
         const val LOCATION_INTERVAL_MS = 200L
     }
-    private val locations = activity.getSystemService(LocationManager::class.java)
-    private val sensors = activity.getSystemService(SensorManager::class.java)
+    private val locations = context.getSystemService(LocationManager::class.java)
+    private val sensors = context.getSystemService(SensorManager::class.java)
+    private val displays = context.getSystemService(DisplayManager::class.java)
     private val rotation = sensors.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
     private val gyro = sensors.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
     private var gnss: GnssSample? = null
@@ -177,7 +179,7 @@ class PhoneSensorManager(
     @SuppressLint("MissingPermission")
     private fun startGnss() {
         if (!gnssEnabled) { gnssStatus = GnssStatus.DISABLED; return }
-        if (activity.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+        if (context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
             gnssStatus = GnssStatus.PERMISSION_DENIED; return
         }
         if (!locations.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
@@ -203,7 +205,7 @@ class PhoneSensorManager(
 
     override fun onSensorChanged(event: SensorEvent) {
         if (event.sensor.type == Sensor.TYPE_GYROSCOPE) {
-            val rotation = activity.display?.rotation ?: Surface.ROTATION_0
+            val rotation = displayRotation()
             val rate = when (rotation) {
                 Surface.ROTATION_90 -> -event.values[0]
                 Surface.ROTATION_180 -> -event.values[1]
@@ -217,7 +219,7 @@ class PhoneSensorManager(
         val raw = FloatArray(9)
         val displayAdjusted = FloatArray(9)
         SensorManager.getRotationMatrixFromVector(raw, event.values)
-        val axes = when (activity.display?.rotation ?: Surface.ROTATION_0) {
+        val axes = when (displayRotation()) {
             Surface.ROTATION_90 -> SensorManager.AXIS_Y to SensorManager.AXIS_MINUS_X
             Surface.ROTATION_180 -> SensorManager.AXIS_MINUS_X to SensorManager.AXIS_MINUS_Y
             Surface.ROTATION_270 -> SensorManager.AXIS_MINUS_Y to SensorManager.AXIS_X
@@ -229,6 +231,7 @@ class PhoneSensorManager(
         calibration.lean(q)?.let { imu = ImuSample(it, latestRollRate, rotationAccuracy, event.timestamp) }
         publish()
     }
+    private fun displayRotation() = displays.getDisplay(Display.DEFAULT_DISPLAY)?.rotation ?: Surface.ROTATION_0
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
         if (sensor?.type == Sensor.TYPE_ROTATION_VECTOR) {
             rotationAccuracy = accuracy
