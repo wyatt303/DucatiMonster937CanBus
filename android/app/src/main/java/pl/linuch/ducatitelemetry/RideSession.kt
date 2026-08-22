@@ -52,9 +52,9 @@ data class RideSession(
 }
 
 object TelemetryCsv {
-    const val HEADER = "utc (ms),sequence,esp time (ms),engine (rpm),gear,speed (km/h),throttle (%),front brake (%),engine temperature (°C),ambient temperature (°C)"
+    const val HEADER = "utc (ms),sequence,esp time (ms),engine (rpm),gear,speed (km/h),throttle (%),front brake (%),engine temperature (°C),ambient temperature (°C),latitude,longitude,altitude (m),gps speed (km/h),bearing (deg),gps accuracy (m),lean angle (deg),roll rate (deg/s),imu accuracy"
 
-    fun row(t: Telemetry): String = buildString {
+    fun row(t: Telemetry, sensors: PhoneSensorSnapshot = PhoneSensorSnapshot()): String = buildString {
         append(t.phoneTimestampMs); append(',')
         append(t.sequence); append(',')
         append(t.espTimeMs); append(',')
@@ -64,7 +64,20 @@ object TelemetryCsv {
         append(java.lang.String.format(java.util.Locale.US, "%.2f", t.throttlePercent)); append(',')
         append(java.lang.String.format(java.util.Locale.US, "%.2f", t.frontBrakePercent)); append(',')
         append(t.engineTempC); append(',')
-        append(t.ambientTempC)
+        append(t.ambientTempC); append(',')
+        appendNumber(sensors.gnss?.latitude, 7); append(',')
+        appendNumber(sensors.gnss?.longitude, 7); append(',')
+        appendNumber(sensors.gnss?.altitudeM, 2); append(',')
+        appendNumber(sensors.gnss?.gpsSpeedKmh, 2); append(',')
+        appendNumber(sensors.gnss?.bearingDeg, 2); append(',')
+        appendNumber(sensors.gnss?.accuracyM, 2); append(',')
+        appendNumber(sensors.imu?.leanAngleDeg, 2); append(',')
+        appendNumber(sensors.imu?.rollRateDps, 2); append(',')
+        sensors.imu?.accuracy?.let(::append)
+    }
+
+    private fun StringBuilder.appendNumber(value: Double?, decimals: Int) {
+        if (value != null && value.isFinite()) append(java.lang.String.format(java.util.Locale.US, "%.${decimals}f", value))
     }
 }
 
@@ -187,12 +200,12 @@ class RideSessionManager(
     }
 
     @Synchronized
-    fun appendTelemetry(telemetry: Telemetry): String? {
+    fun appendTelemetry(telemetry: Telemetry, sensors: PhoneSensorSnapshot = PhoneSensorSnapshot()): String? {
         val session = active ?: return null
         if (session.state != RideSessionState.RECORDING) return null
 
         return try {
-            writer?.append(TelemetryCsv.row(telemetry))?.append('\n')
+            writer?.append(TelemetryCsv.row(telemetry, sensors))?.append('\n')
                 ?: throw IOException("Ride file is closed")
             session.sampleCount++
             session.endTime = telemetry.phoneTimestampMs.coerceAtLeast(session.startTime)

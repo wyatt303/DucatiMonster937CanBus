@@ -2,10 +2,13 @@ package pl.linuch.ducatitelemetry
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Intent
+import android.content.res.Configuration
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
+import android.os.SystemClock
 import android.view.View
 import android.widget.*
 import java.io.File
@@ -15,10 +18,13 @@ import java.util.*
 class MainActivity : Activity() {
     companion object {
         private const val REQUEST_BLE = 100
+        private const val REQUEST_LOCATION = 101
         private const val CREATE_CSV = 200
         private const val OPEN_FIRMWARE = 300
         private const val RETENTION_KEY = "ride_session_retention"
         private const val UNLIMITED = -1
+        private const val GNSS_ENABLED_KEY = "gnss_enabled"
+        private const val LEAN_ENABLED_KEY = "lean_enabled"
     }
 
     private lateinit var status: TextView
@@ -38,8 +44,15 @@ class MainActivity : Activity() {
     private lateinit var updateFirmware: Button
     private lateinit var savedRides: LinearLayout
     private lateinit var retention: Spinner
+    private lateinit var gnssSwitch: Switch
+    private lateinit var leanSwitch: Switch
+    private lateinit var gnssStatusView: TextView
+    private lateinit var leanStatusView: TextView
+    private lateinit var calibrateLean: Button
+    private lateinit var resetLean: Button
     private lateinit var ble: DucatiBleClient
     private lateinit var sessions: RideSessionManager
+    private lateinit var phoneSensors: PhoneSensorManager
     private val csvExporter = CsvExporter()
     private var connected = false
     private var bleState = BleConnectionState.DISCONNECTED
@@ -55,6 +68,7 @@ class MainActivity : Activity() {
         sessions = RideSessionManager(File(filesDir, "ride_sessions"), ::retentionLimit)
         val recovered = sessions.recoverSessions()
         configureRetention()
+        configurePhoneSensors()
         configureBle()
         configureActions()
         renderSessionState()
@@ -87,6 +101,74 @@ class MainActivity : Activity() {
         updateFirmware = findViewById(R.id.updateFirmwareButton)
         savedRides = findViewById(R.id.savedRidesContainer)
         retention = findViewById(R.id.retentionSpinner)
+        gnssSwitch = findViewById(R.id.gnssSwitch)
+        leanSwitch = findViewById(R.id.leanSwitch)
+        gnssStatusView = findViewById(R.id.gnssStatus)
+        leanStatusView = findViewById(R.id.leanStatus)
+        calibrateLean = findViewById(R.id.calibrateLeanButton)
+        resetLean = findViewById(R.id.resetLeanButton)
+    }
+
+    private fun configurePhoneSensors() {
+        val preferences = getPreferences(MODE_PRIVATE)
+        phoneSensors = PhoneSensorManager(this, PreferenceLeanCalibrationStore(this)) { snapshot, gpsStatus ->
+            runOnUiThread {
+                gnssStatusView.text = buildString {
+                    append("GPS: ").append(gpsStatus.name.lowercase().replace('_', ' ').replaceFirstChar(Char::uppercase))
+                    snapshot.gnss?.accuracyM?.let { append("\nAccuracy: %.1f m".format(Locale.US, it)) }
+                }
+                leanStatusView.text = when {
+                    !leanSwitch.isChecked -> "Lean: Disabled"
+                    !phoneSensors.leanAvailable -> "Lean: unavailable (orientation sensor missing)"
+                    !phoneSensors.calibrated -> "Lean calibration: Required"
+                    snapshot.imu != null -> "Lean: %+.1f°\nIMU: %s".format(Locale.US, snapshot.imu.leanAngleDeg,
+                        accuracyLabel(snapshot.imu.accuracy))
+                    else -> "Lean calibration: Calibrated · Waiting for IMU"
+                }
+            }
+        }
+        val gnssEnabled = preferences.getBoolean(GNSS_ENABLED_KEY, true)
+        val leanEnabled = preferences.getBoolean(LEAN_ENABLED_KEY, true)
+        gnssSwitch.isChecked = gnssEnabled
+        leanSwitch.isChecked = leanEnabled && phoneSensors.leanAvailable
+        leanSwitch.isEnabled = phoneSensors.leanAvailable
+        calibrateLean.isEnabled = phoneSensors.leanAvailable && leanSwitch.isChecked
+        resetLean.isEnabled = phoneSensors.calibrated
+        gnssSwitch.setOnCheckedChangeListener { _, checked ->
+            preferences.edit().putBoolean(GNSS_ENABLED_KEY, checked).apply()
+            if (checked && !hasLocationPermission()) requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION), REQUEST_LOCATION)
+            phoneSensors.setEnabled(checked, leanSwitch.isChecked)
+        }
+        leanSwitch.setOnCheckedChangeListener { _, checked ->
+            preferences.edit().putBoolean(LEAN_ENABLED_KEY, checked).apply()
+            calibrateLean.isEnabled = checked && phoneSensors.leanAvailable
+            phoneSensors.setEnabled(gnssSwitch.isChecked, checked)
+        }
+        calibrateLean.setOnClickListener {
+            AlertDialog.Builder(this).setTitle("Lean Angle Calibration")
+                .setMessage("Place the motorcycle upright and stationary with the phone mounted in its normal riding position.")
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Calibrate") { _, _ ->
+                    val success = phoneSensors.calibrate()
+                    resetLean.isEnabled = success
+                    Toast.makeText(this, if (success) "Lean angle calibrated: upright is 0°" else "Waiting for orientation sensor", Toast.LENGTH_LONG).show()
+                }.show()
+        }
+        resetLean.setOnClickListener {
+            phoneSensors.resetCalibration()
+            resetLean.isEnabled = false
+            Toast.makeText(this, "Lean calibration reset", Toast.LENGTH_SHORT).show()
+        }
+        phoneSensors.setEnabled(gnssEnabled, leanEnabled)
+        if (gnssEnabled && !hasLocationPermission()) requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION), REQUEST_LOCATION)
+    }
+
+    private fun accuracyLabel(accuracy: Int?): String = when (accuracy) {
+        android.hardware.SensorManager.SENSOR_STATUS_ACCURACY_HIGH -> "High"
+        android.hardware.SensorManager.SENSOR_STATUS_ACCURACY_MEDIUM -> "Medium"
+        android.hardware.SensorManager.SENSOR_STATUS_ACCURACY_LOW -> "Low"
+        android.hardware.SensorManager.SENSOR_STATUS_UNRELIABLE -> "Unreliable"
+        else -> "Available"
     }
 
     private fun configureBle() {
@@ -199,7 +281,8 @@ class MainActivity : Activity() {
         engine.text = "Engine ${t.engineTempC} °C"
         ambient.text = "Ambient ${t.ambientTempC} °C"
         packets.text = "Packets $packetCount   Sequence ${t.sequence}   Dropped $dropped"
-        sessions.appendTelemetry(t)?.let {
+        val sensorTimestamp = t.phoneTimestampNanos.takeIf { it > 0 } ?: SystemClock.elapsedRealtimeNanos()
+        sessions.appendTelemetry(t, phoneSensors.snapshotAt(sensorTimestamp))?.let {
             Toast.makeText(this, it, Toast.LENGTH_LONG).show()
             renderSessionState()
             renderSavedRides()
@@ -299,6 +382,9 @@ class MainActivity : Activity() {
         checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED &&
             checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
 
+    private fun hasLocationPermission() =
+        checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+
     private fun requestBlePermissions() = requestPermissions(
         arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT), REQUEST_BLE
     )
@@ -311,6 +397,8 @@ class MainActivity : Activity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQUEST_BLE && hasBlePermissions() && sessions.activeSession() != null) {
             ble.reconnectForActiveRide()
+        } else if (requestCode == REQUEST_LOCATION) {
+            phoneSensors.setEnabled(gnssSwitch.isChecked, leanSwitch.isChecked)
         }
     }
 
@@ -352,7 +440,13 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        phoneSensors.stop()
         ble.disconnect()
         super.onDestroy()
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        phoneSensors.setEnabled(gnssSwitch.isChecked, leanSwitch.isChecked)
     }
 }

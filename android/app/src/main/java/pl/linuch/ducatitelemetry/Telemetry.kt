@@ -13,13 +13,14 @@ data class Telemetry(
     val frontBrakePercent: Double,
     val engineTempC: Int,
     val ambientTempC: Int,
-    val phoneTimestampMs: Long
+    val phoneTimestampMs: Long,
+    val phoneTimestampNanos: Long = 0L
 )
 
 object TelemetryDecoder {
     const val PACKET_SIZE = 19
 
-    fun decode(data: ByteArray, phoneTimestampMs: Long): Telemetry? {
+    fun decode(data: ByteArray, phoneTimestampMs: Long, phoneTimestampNanos: Long = 0L): Telemetry? {
         if (data.size != PACKET_SIZE) return null
 
         val b = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
@@ -35,7 +36,7 @@ object TelemetryDecoder {
 
         return Telemetry(
             sequence, espTimeMs, rpm, gear, speed, throttle, brake,
-            engineTemp, ambientTemp, phoneTimestampMs
+            engineTemp, ambientTemp, phoneTimestampMs, phoneTimestampNanos
         )
     }
 }

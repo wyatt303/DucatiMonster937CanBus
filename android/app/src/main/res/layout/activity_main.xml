@@ -181,6 +181,61 @@ N"
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="Phone sensors"
+            android:textColor="@color/text_primary"
+            android:textSize="20sp"
+            android:textStyle="bold" />
+
+        <Switch
+            android:id="@+id/gnssSwitch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Record GNSS" />
+
+        <TextView
+            android:id="@+id/gnssStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="GPS: Disabled"
+            android:textColor="@color/text_secondary" />
+
+        <Switch
+            android:id="@+id/leanSwitch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Lean angle" />
+
+        <TextView
+            android:id="@+id/leanStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Lean calibration: Required"
+            android:textColor="@color/text_secondary" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/calibrateLeanButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Calibrate" />
+
+            <Button
+                android:id="@+id/resetLeanButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Reset calibration" />
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
             android:layout_marginTop="28dp"
             android:text="Saved rides"
             android:textColor="@color/text_primary"

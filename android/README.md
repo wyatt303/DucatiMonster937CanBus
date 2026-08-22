@@ -4,7 +4,7 @@ Native Kotlin Android application for the Ducati Monster 937 CAN/BLE telemetry l
 
 ## Version
 
-**0.0.2**
+**0.0.3**
 
 - Minimum Android: **12 / API 31**
 - Compile SDK: **35**
@@ -19,7 +19,8 @@ Native Kotlin Android application for the Ducati Monster 937 CAN/BLE telemetry l
 - Firmware, protocol, and Git build identification from the device-info characteristic
 - 19-byte binary telemetry decoding
 - Live RPM, gear, speed, throttle, front brake, engine and ambient temperature
-- Android wall-clock timestamp on packet reception
+- Android wall-clock and monotonic timestamps on packet reception
+- Optional GNSS recording and calibrated phone-mounted lean angle/roll rate
 - BLE sequence/drop detection
 - Persistent ride sessions written incrementally to app-private storage
 - Start, Pause, Resume, and Stop recording without interrupting live telemetry
@@ -32,7 +33,7 @@ Native Kotlin Android application for the Ducati Monster 937 CAN/BLE telemetry l
 
 Starting a ride immediately creates a CSV file and metadata under the app's
 private `files/ride_sessions` directory. The existing Telemetry Overlay CSV
-header and column order are preserved. Each telemetry row is appended as it
+columns and their order are preserved; phone sensor columns are appended. Each telemetry row is appended as it
 arrives, so the complete ride is never held in memory. Buffered CSV data and
 active-session metadata are flushed approximately every two seconds to reduce
 filesystem I/O.
@@ -82,15 +83,54 @@ The Recording setting retains the newest 10 completed/recovered sessions by
 default. Available limits are 5, 10, 20, 50, and Unlimited. Cleanup is oldest
 first and never targets an active or paused session.
 
+## Phone sensors
+
+Phone sensors are optional and independent of BLE/CAN telemetry. **Record
+GNSS** and **Lean angle** can be enabled separately. Denied location permission,
+disabled GPS, or a missing orientation sensor does not prevent normal CAN
+recording.
+
+GNSS uses Android's platform `LocationManager` GPS provider. It requests updates
+no faster than every 200 ms (up to 5 Hz) and stores only real fixes delivered by
+Android. Fields are latitude, longitude, altitude, GPS speed, bearing, and
+horizontal accuracy. CAN speed is the motorcycle-reported value; GPS speed is
+the phone location provider's value. Both remain separate.
+
+Lean angle uses the fused `TYPE_ROTATION_VECTOR`, avoiding a gravity estimate
+based only on the accelerometer during cornering. Orientation and optional gyro
+roll rate are normalized for display rotation. Rigidly mount the phone, hold the
+motorcycle upright and stationary, and press **Calibrate**. The full orientation
+is persisted as 0°. Reset/recalibrate after moving the mount. Negative values
+mean left lean and positive values mean right lean. Calibration supports fixed
+portrait/landscape and tilted or slightly crooked mounts, but cannot compensate
+for a phone moving independently in a pocket, bag, or loose holder.
+
+## Timing and sensor association
+
+Synchronization uses Android's monotonic elapsed-realtime nanosecond timeline:
+BLE uses `SystemClock.elapsedRealtimeNanos()` at reception, GNSS uses
+`Location.elapsedRealtimeNanos`, and IMU uses `SensorEvent.timestamp`. UTC
+milliseconds remain for export, and `espTimeMs` remains a separate diagnostic
+field. ESP `millis()` is not mapped to wall time and BLE latency is not
+compensated.
+
+CSV recording remains CAN-sample-driven. Each CAN row receives the latest GNSS
+and IMU snapshot on the monotonic timeline. GNSS freshness is 3 seconds and IMU
+freshness is 500 ms; stale, absent, or future-dated values produce empty fields.
+The valid coordinate `0,0` is retained. Pause and BLE disconnection create no
+phone-only rows.
+
+The appended columns are latitude, longitude, altitude (m), GPS speed (km/h),
+bearing (deg), GPS accuracy (m), lean angle (deg), roll rate (deg/s), and IMU
+accuracy. These can support a future GPX exporter; GPX is not implemented.
+
 ## Not yet implemented
 
 - Background recording service
-- GPS
 - GPX export
 - Advanced dashboard
 
-The storage/export separation is intended to support future GPS fields and a
-GPX exporter. GPS and GPX are not implemented yet.
+The storage/export separation is intended to support a future GPX exporter.
 
 ## Build
 

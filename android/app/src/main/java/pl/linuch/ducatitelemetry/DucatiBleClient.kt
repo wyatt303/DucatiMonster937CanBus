@@ -6,6 +6,7 @@ import android.bluetooth.le.*
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.os.ParcelUuid
 import java.util.UUID
 import java.util.zip.CRC32
@@ -301,7 +302,8 @@ class DucatiBleClient(
             if (characteristic.uuid == DucatiBle.TELEMETRY) {
                 TelemetryDecoder.decode(
                     characteristic.value,
-                    System.currentTimeMillis()
+                    System.currentTimeMillis(),
+                    SystemClock.elapsedRealtimeNanos()
                 )?.let(onTelemetry)
             } else if (characteristic.uuid == DucatiBle.OTA_STATUS) {
                 handleOtaStatus(characteristic.value)

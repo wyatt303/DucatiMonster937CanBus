@@ -390,7 +390,39 @@ class RideSessionManagerTest {
         CsvExporter().export(manager.sessionFile(session.id)!!, output)
         val lines = output.toString(Charsets.UTF_8.name()).lines()
         assertEquals(TelemetryCsv.HEADER, lines[0])
-        assertEquals("1000,1,1000,3000,2,42.25,12.50,0.00,80,20", lines[1])
+        assertEquals("1000,1,1000,3000,2,42.25,12.50,0.00,80,20,,,,,,,,,", lines[1])
+    }
+
+    @Test
+    fun phoneSensorsAreAppendedWithoutReplacingCanSpeed() {
+        val root = temporaryFolder.newFolder()
+        val clock = TestClock()
+        val manager = manager(root, clock)
+        val session = manager.startSession()
+        val sensors = PhoneSensorSnapshot(
+            gnss = GnssSample(52.1, 21.2, 101.5, 40.0, 182.0, 3.2, 900),
+            imu = ImuSample(-32.5, -8.25, 3, 950)
+        )
+        manager.appendTelemetry(telemetry(clock.now), sensors)
+        manager.stopSession()
+
+        val fields = File(root, session.filePath).readLines()[1].split(',')
+        assertEquals("42.25", fields[5])
+        assertEquals("40.00", fields[13])
+        assertEquals("52.1000000", fields[10])
+        assertEquals("-32.50", fields[16])
+    }
+
+    @Test
+    fun pausedSessionDoesNotAppendPhoneSensorRow() {
+        val root = temporaryFolder.newFolder()
+        val clock = TestClock()
+        val manager = manager(root, clock)
+        val session = manager.startSession()
+        manager.pauseSession()
+        manager.appendTelemetry(telemetry(clock.now), PhoneSensorSnapshot(gnss = GnssSample(1.0, 2.0, null, null, null, null, 1)))
+        manager.stopSession()
+        assertFalse(File(root, session.filePath).exists())
     }
 
     private fun assertRetention(limit: Int?, created: Int) {
