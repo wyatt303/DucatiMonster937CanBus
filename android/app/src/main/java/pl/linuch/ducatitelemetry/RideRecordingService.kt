@@ -197,6 +197,7 @@ class RideRecordingService : Service() {
     fun listSessions() = sessions.listSessions()
     fun deleteSession(id: String) = sessions.deleteSession(id)
     fun sessionFile(id: String) = sessions.sessionFile(id)
+    fun sessionGpxDataFile(id: String) = sessions.sessionGpxDataFile(id)
     fun setRetention(value: Int?) {
         settings().edit().putInt(RETENTION_KEY, value ?: UNLIMITED).apply()
         sessions.enforceRetentionLimit()

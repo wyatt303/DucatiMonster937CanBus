@@ -100,6 +100,8 @@ class RideSessionManager(
 
     private var active: RideSession? = null
     private var writer: BufferedWriter? = null
+    private var gpxDataWriter: BufferedWriter? = null
+    private var lastGnssTimestampNanos: Long? = null
     private var lastFlushAt = 0L
 
     init {
@@ -133,15 +135,23 @@ class RideSessionManager(
                 it.append(TelemetryCsv.HEADER).append('\n')
                 it.flush()
             }
+            gpxDataWriter = gpxDataFile(session.id).outputStream().bufferedWriter(StandardCharsets.UTF_8).also {
+                it.append(GpxPointData.HEADER).append('\n')
+                it.flush()
+            }
+            lastGnssTimestampNanos = null
             lastFlushAt = now
             active = session
             writeMetadata(session)
             return session.copy()
         } catch (error: Exception) {
             writer?.closeQuietly()
+            gpxDataWriter?.closeQuietly()
             writer = null
+            gpxDataWriter = null
             active = null
             csv.delete()
+            gpxDataFile(id).delete()
             metadataFile(id).delete()
             throw IOException("Cannot start local recording", error)
         }
@@ -179,6 +189,9 @@ class RideSessionManager(
         flushWriter(now)
         writer?.close()
         writer = null
+        gpxDataWriter?.close()
+        gpxDataWriter = null
+        lastGnssTimestampNanos = null
         if (session.state == RideSessionState.PAUSED) {
             session.totalPausedDurationMs += (now - (session.pausedAt ?: now)).coerceAtLeast(0)
             session.pausedAt = null
@@ -188,6 +201,7 @@ class RideSessionManager(
 
         if (session.sampleCount == 0L) {
             csvFile(session).delete()
+            gpxDataFile(session.id).delete()
             metadataFile(session.id).delete()
             return null
         }
@@ -207,6 +221,11 @@ class RideSessionManager(
         return try {
             writer?.append(TelemetryCsv.row(telemetry, sensors))?.append('\n')
                 ?: throw IOException("Ride file is closed")
+            GpxPointData.from(telemetry, sensors)?.takeIf { it.gnssTimestampNanos != lastGnssTimestampNanos }?.let {
+                gpxDataWriter?.append(GpxPointData.row(it))?.append('\n')
+                    ?: throw IOException("Ride GPX data file is closed")
+                lastGnssTimestampNanos = it.gnssTimestampNanos
+            }
             session.sampleCount++
             session.endTime = telemetry.phoneTimestampMs.coerceAtLeast(session.startTime)
             val now = clock()
@@ -217,7 +236,9 @@ class RideSessionManager(
             null
         } catch (error: Exception) {
             writer?.closeQuietly()
+            gpxDataWriter?.closeQuietly()
             writer = null
+            gpxDataWriter = null
             active = null
             session.state = RideSessionState.RECOVERED
             session.recovered = true
@@ -237,7 +258,10 @@ class RideSessionManager(
             }
         }
         writer?.closeQuietly()
+        gpxDataWriter?.closeQuietly()
         writer = null
+        gpxDataWriter = null
+        lastGnssTimestampNanos = null
         active = null
         val recovered = mutableListOf<RideSession>()
 
@@ -252,12 +276,20 @@ class RideSessionManager(
                     if (!csvFile(session).isFile) throw IOException("Ride CSV is missing")
                     writer = FileOutputStream(csvFile(session), true)
                         .bufferedWriter(StandardCharsets.UTF_8)
+                    val data = gpxDataFile(session.id)
+                    if (!data.exists()) data.writeText(GpxPointData.HEADER + "\n", StandardCharsets.UTF_8)
+                    gpxDataWriter = FileOutputStream(data, true).bufferedWriter(StandardCharsets.UTF_8)
+                    lastGnssTimestampNanos = data.useLines { lines -> lines.drop(1).lastOrNull()?.let(GpxPointData::parse)?.gnssTimestampNanos }
                     lastFlushAt = clock()
                     active = session
                 } catch (_: Exception) {
                     session.state = RideSessionState.RECOVERED
                     session.recovered = true
                     session.pausedAt = null
+                    writer?.closeQuietly()
+                    gpxDataWriter?.closeQuietly()
+                    writer = null
+                    gpxDataWriter = null
                     runCatching { writeMetadata(session) }
                     recovered += session.copy()
                 }
@@ -268,6 +300,7 @@ class RideSessionManager(
                 session.pausedAt = null
                 if (session.sampleCount == 0L) {
                     csvFile(session).delete()
+                    gpxDataFile(session.id).delete()
                     metadataFile(session.id).delete()
                 } else {
                     runCatching { writeMetadata(session) }
@@ -294,7 +327,8 @@ class RideSessionManager(
         }
         val csvDeleted = !csvFile(session).exists() || csvFile(session).delete()
         val metadataDeleted = !metadataFile(id).exists() || metadataFile(id).delete()
-        return csvDeleted && metadataDeleted
+        val gpxDataDeleted = !gpxDataFile(id).exists() || gpxDataFile(id).delete()
+        return csvDeleted && metadataDeleted && gpxDataDeleted
     }
 
     @Synchronized
@@ -305,6 +339,9 @@ class RideSessionManager(
         }
         return csvFile(session).takeIf { it.isFile }
     }
+
+    @Synchronized
+    fun sessionGpxDataFile(id: String): File? = sessionFile(id)?.let { gpxDataFile(id).takeIf(File::isFile) }
 
     @Synchronized
     fun enforceRetentionLimit() {
@@ -373,9 +410,11 @@ class RideSessionManager(
     }
 
     private fun metadataFile(id: String) = File(root, "$id.properties")
+    private fun gpxDataFile(id: String) = File(root, "$id.gpxdata")
     private fun csvFile(session: RideSession) = File(root, session.filePath)
     private fun flushWriter(now: Long) {
         writer?.flush() ?: throw IOException("Ride file is closed")
+        gpxDataWriter?.flush() ?: throw IOException("Ride GPX data file is closed")
         lastFlushAt = now
     }
     private fun BufferedWriter.closeQuietly() = runCatching { close() }.getOrNull()

@@ -414,6 +414,20 @@ class RideSessionManagerTest {
     }
 
     @Test
+    fun repeatedCanRowsPersistOneUniqueGnssFixForGpx() {
+        val root = temporaryFolder.newFolder()
+        val clock = TestClock()
+        val manager = manager(root, clock)
+        val session = manager.startSession()
+        val sensors = PhoneSensorSnapshot(gnss = GnssSample(52.1, 21.2, 100.0, 40.0, 180.0, 3.0, 900))
+        manager.appendTelemetry(telemetry(clock.now, 1), sensors)
+        manager.appendTelemetry(telemetry(clock.now + 20, 2), sensors)
+        manager.stopSession()
+
+        assertEquals(2, manager.sessionGpxDataFile(session.id)!!.readLines().size)
+    }
+
+    @Test
     fun pausedSessionDoesNotAppendPhoneSensorRow() {
         val root = temporaryFolder.newFolder()
         val clock = TestClock()

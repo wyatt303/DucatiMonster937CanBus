@@ -4,7 +4,7 @@ Native Kotlin Android application for the Ducati Monster 937 CAN/BLE telemetry l
 
 ## Version
 
-**0.0.4**
+**0.0.5**
 
 - Minimum Android: **12 / API 31**
 - Compile SDK: **35**
@@ -25,7 +25,7 @@ Native Kotlin Android application for the Ducati Monster 937 CAN/BLE telemetry l
 - BLE sequence/drop detection
 - Persistent ride sessions written incrementally to app-private storage
 - Start, Pause, Resume, and Stop recording without interrupting live telemetry
-- Saved ride history with per-ride CSV export and deletion
+- Saved ride history with CSV, GPX, or combined export and deletion
 - Recovery of interrupted Recording sessions and restoration of resumable Paused sessions
 - Configurable retention of 5, 10, 20, 50, or unlimited saved rides
 - Firmware update from a PlatformIO `firmware.bin` file over BLE OTA
@@ -50,7 +50,7 @@ continues to update. Resume writes to the same session and CSV file. Session
 metadata tracks wall-clock duration, cumulative paused duration, and active
 recording duration; no pause-marker rows are added to the CSV.
 
-Stop saves a non-empty session in Saved rides. Export copies its private CSV
+Stop saves a non-empty session in Saved rides. Export offers CSV, GPX, or Both
 through Android's document picker; stopping does not export automatically.
 Empty sessions are discarded. Saved rides can also be deleted manually.
 
@@ -151,14 +151,59 @@ phone-only rows.
 
 The appended columns are latitude, longitude, altitude (m), GPS speed (km/h),
 bearing (deg), GPS accuracy (m), lean angle (deg), roll rate (deg/s), and IMU
-accuracy. These can support a future GPX exporter; GPX is not implemented.
+accuracy. CSV columns and Telemetry Overlay compatibility are unchanged by GPX.
+
+## CSV and GPX export
+
+CSV remains the full CAN-sample-driven Telemetry Overlay export. GPX is generated
+on demand from persisted Ride Session data; it is not a second recording
+pipeline. New sessions keep a private `gpxdata` sidecar containing one row per
+unique GNSS monotonic measurement timestamp. Its UTC time is derived from the
+already-associated CAN wall-clock and the GNSS/CAN monotonic-time difference.
+The nearest persisted CAN row and its fresh IMU snapshot supply extensions.
+
+Older sessions without a sidecar remain exportable. Their repeated CSV GNSS
+values are deduplicated by exact latitude, longitude, altitude, GPS speed, and
+accuracy identity, and the first associated CAN UTC timestamp is used. This
+fallback may merge separate stationary fixes that happen to have identical
+values; new recordings use the actual GNSS measurement timestamp.
+
+GPX output is UTF-8 GPX 1.1 with UTC ISO-8601 timestamps and the extension
+namespace:
+
+```text
+https://github.com/wyatt303/DucatiMonster937CanBus/gpx/1
+```
+
+Example:
+
+```xml
+<trkpt lat="50.1234567" lon="18.9876543">
+  <ele>284.20</ele>
+  <time>2026-08-22T16:24:31.250Z</time>
+  <extensions>
+    <ducati:rpm>6840</ducati:rpm>
+    <ducati:can_speed_kmh>82.4</ducati:can_speed_kmh>
+    <ducati:gps_speed_kmh>79.8</ducati:gps_speed_kmh>
+    <ducati:lean_angle_deg>-38.2</ducati:lean_angle_deg>
+  </extensions>
+</trkpt>
+```
+
+Extensions can include RPM, separate CAN/GPS speeds, gear, throttle, front
+brake, engine/ambient temperatures, lean angle, roll rate, and GPS accuracy.
+Missing values and missing elevation are omitted. A ride without valid GNSS
+fixes cannot be exported as GPX, although CSV remains available. Pause and GNSS
+gaps create timestamp gaps; no route points are interpolated.
+
+Single-format export uses `ACTION_CREATE_DOCUMENT`. **Both** asks for a directory
+and creates matching `ducati-ride-YYYYMMDD-HHMMSS.csv` and `.gpx` files there.
+Map/OpenStreetMap visualization is intentionally not part of this feature.
 
 ## Not yet implemented
 
-- GPX export
 - Advanced dashboard
-
-The storage/export separation is intended to support a future GPX exporter.
+- Route map/OpenStreetMap visualization
 
 ## Foreground-service manual tests
 
